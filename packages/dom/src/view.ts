@@ -1,3 +1,6 @@
+import { mountNotices, NOTICE_CSS } from './notices'
+import { t, onLocaleChange } from './i18n'
+import { FlowchartGestures, GESTURE_CSS } from './gestures'
 import {
   MermaidWysiwygEditor,
   MESSAGE_OPS,
@@ -217,6 +220,8 @@ export class MermaidCanvasView {
   private lastRenderedCode = ''
   private disposers: Array<() => void> = []
   private listeners = new Map<keyof ViewEventMap, Set<(p: never) => void>>()
+  private notices: ReturnType<typeof mountNotices>
+  private gestures: FlowchartGestures
   private connectSource: string | null = null
   private suppressNextClick = false
   private ghostPath: SVGLineElement | null = null
@@ -271,7 +276,7 @@ export class MermaidCanvasView {
     if (!styleInjected) {
       const style = document.createElement('style')
       style.setAttribute('data-mw', '')
-      style.textContent = BASE_CSS + POPOVER_CSS
+      style.textContent = BASE_CSS + POPOVER_CSS + GESTURE_CSS + NOTICE_CSS
       document.head.appendChild(style)
       styleInjected = true
     }
@@ -289,10 +294,21 @@ export class MermaidCanvasView {
     this.errorBadge.style.display = 'none'
     this.container.append(this.svgHost, this.overlayHost, this.errorBadge)
     this.popover = new Popover(this.overlayHost)
+    this.gestures = new FlowchartGestures(this.editor, this.container, () => this.readOnly, () => this.updatePopover())
+
+    this.notices = mountNotices(this.container, this.editor, () => this.readOnly)
 
     this.mermaid.initialize(this.mermaidConfig)
 
     this.disposers.push(
+      onLocaleChange(() => {
+        this.clearLifelineUi()
+        this.updatePopover()
+        if (this.lastError) this.errorBadge.textContent = t('status.parseError')
+        const keys = ['ui.zoomOut', 'ui.zoomIn', 'ui.fitDiagram']
+        this.zoomControls?.querySelectorAll('button').forEach((b, i) => { b.title = t(keys[i]); b.setAttribute('aria-label', t(keys[i])) })
+        this.container.querySelectorAll('[contenteditable="true"]').forEach(el => el.setAttribute('aria-label', t('ui.inlineEditor')))
+      }),
       this.editor.on('change', () => this.scheduleRender()),
       this.editor.on('selectionChange', () => this.applySelectionStyles()),
     )
@@ -350,6 +366,7 @@ export class MermaidCanvasView {
 
   setReadOnly(readOnly: boolean) {
     this.readOnly = readOnly
+    this.notices.update()
     this.container.classList.toggle('mw-readonly', readOnly)
     this.closeInlineEditor(false)
     this.cancelConnect()
@@ -375,7 +392,7 @@ export class MermaidCanvasView {
   }
 
   /** Add a node and immediately open its inline label editor. */
-  addNode(shape: ShapeId = 'rect', label = 'New node') {
+  addNode(shape: ShapeId = 'rect', label = t('drag.newNode')) {
     if (this.readOnly) return
     const res = this.editor.dispatch({ type: 'addNode', shape, label })
     const created = res?.created?.[0]
@@ -468,6 +485,7 @@ export class MermaidCanvasView {
       b.type = 'button'
       b.className = 'mw-zoom-btn'
       b.title = title
+      b.setAttribute('aria-label', title)
       b.innerHTML = iconMarkup
       b.addEventListener('pointerdown', (e) => e.stopPropagation())
       b.addEventListener('click', (e) => {
@@ -476,9 +494,9 @@ export class MermaidCanvasView {
       })
       controls.appendChild(b)
     }
-    btn('Zoom out', ICONS.minus, () => this.zoomBy(1 / 1.25))
-    btn('Zoom in', ICONS.plus, () => this.zoomBy(1.25))
-    btn('Fit diagram', ICONS.maximize, () => this.fitView())
+    btn(t('ui.zoomOut'), ICONS.minus, () => this.zoomBy(1 / 1.25))
+    btn(t('ui.zoomIn'), ICONS.plus, () => this.zoomBy(1.25))
+    btn(t('ui.fitDiagram'), ICONS.maximize, () => this.fitView())
     this.container.appendChild(controls)
     this.zoomControls = controls
 
@@ -635,7 +653,7 @@ export class MermaidCanvasView {
       document.getElementById(id)?.remove()
       const message = err instanceof Error ? err.message.split('\n')[0] : String(err)
       this.lastError = message
-      this.errorBadge.textContent = `render error: ${message}`
+      this.errorBadge.textContent = t('status.parseError')
       this.errorBadge.style.display = 'block'
       const diag: Diagnostic = { message, span: null, severity: 'error', source: 'mermaid' }
       this.editor.setDiagnostics([diag])
@@ -700,6 +718,7 @@ export class MermaidCanvasView {
     }
 
     this.applySelectionStyles()
+    this.gestures.update()
   }
 
   private entityFromEvent(e: Event): string | null {
@@ -1137,6 +1156,7 @@ export class MermaidCanvasView {
     session.label = label
 
     label.setAttribute('contenteditable', 'true')
+    label.setAttribute('aria-label', t('ui.inlineEditor'))
     // the box can't grow while renders are held — keep the text on one line
     // and let it spill past the shape instead of wrapping into the clip
     const clipHost = label.closest('foreignObject') as SVGElement | null
@@ -1174,6 +1194,7 @@ export class MermaidCanvasView {
       this.inPlaceSession = null
       if (session.liveTimer) clearTimeout(session.liveTimer)
       label.removeAttribute('contenteditable')
+      label.removeAttribute('aria-label')
       label.style.whiteSpace = prevWhiteSpace
       if (clipHost) clipHost.style.overflow = prevClipOverflow
       label.removeEventListener('keydown', onKey)
@@ -1304,6 +1325,7 @@ export class MermaidCanvasView {
     div.contentEditable = 'true'
     div.spellcheck = false
     div.textContent = current
+    div.setAttribute('aria-label', t('ui.inlineEditor'))
     // grow from the text's center so it stays visually anchored while typing
     div.style.left = `${box.left + box.width / 2}px`
     div.style.top = `${box.top}px`
@@ -1423,6 +1445,7 @@ export class MermaidCanvasView {
   }
 
   private updatePopover() {
+    this.gestures.update()
     this.popover.hide()
     if (this.readOnly || this.inlineInput || this.inPlaceSession) return
     const sel = this.editor.selection
@@ -1458,8 +1481,8 @@ export class MermaidCanvasView {
       title,
       columns: 5,
       items: [
-        ...COLOR_PALETTE.map((c) => ({ swatch: c, title: `${title}: ${c}`, onClick: () => onPick(c) })),
-        { swatch: 'none', title: `${title}: default`, onClick: () => onPick(null) },
+        ...COLOR_PALETTE.map((c) => ({ swatch: c, title: t('ui.colorValue', { name: title, value: c }), onClick: () => onPick(c) })),
+        { swatch: 'none', title: t('ui.defaultColor', { name: title }), onClick: () => onPick(null) },
       ],
     }
   }
@@ -1468,31 +1491,31 @@ export class MermaidCanvasView {
     const { flowchart, sequence } = this.editor.result
     const del: PopoverAction = {
       icon: ICONS.trash,
-      title: 'Delete',
+      title: t('edge.delete'),
       danger: true,
       onClick: () => this.editor.deleteEntities([id]),
     }
-    const rename: PopoverAction = { icon: ICONS.pencil, title: 'Edit text', onClick: () => this.editEntityLabel(id) }
+    const rename: PopoverAction = { icon: ICONS.pencil, title: t('ui.editText'), onClick: () => this.editEntityLabel(id) }
 
     if (flowchart && id.startsWith('node:')) {
       const node = flowchart.nodeById.get(id.slice(5))
       if (!node) return []
       const shapes: Array<{ s: ShapeId; g: string; t: string }> = [
-        { s: 'rect', g: '▭', t: 'Rectangle' },
-        { s: 'round', g: '▢', t: 'Rounded' },
-        { s: 'stadium', g: '⬭', t: 'Stadium' },
-        { s: 'diamond', g: '◇', t: 'Diamond' },
-        { s: 'hexagon', g: '⬡', t: 'Hexagon' },
-        { s: 'circle', g: '◯', t: 'Circle' },
-        { s: 'cylinder', g: '⛁', t: 'Cylinder' },
-        { s: 'subroutine', g: '⧉', t: 'Subroutine' },
+        { s: 'rect', g: '▭', t: t('shape.rect') },
+        { s: 'round', g: '▢', t: t('shape.round') },
+        { s: 'stadium', g: '⬭', t: t('shape.stadium') },
+        { s: 'diamond', g: '◇', t: t('shape.diamond') },
+        { s: 'hexagon', g: '⬡', t: t('shape.hexagon') },
+        { s: 'circle', g: '◯', t: t('shape.circle') },
+        { s: 'cylinder', g: '⛁', t: t('shape.cylinder') },
+        { s: 'subroutine', g: '⧉', t: t('shape.subroutine') },
       ]
       return [
         {
           icon: ICONS.shapes,
-          title: 'Node shape',
+          title: t('ui.nodeShape'),
           panel: {
-            title: 'Node shape',
+            title: t('ui.nodeShape'),
             items: shapes.map((sh) => ({
               glyph: sh.g,
               title: sh.t,
@@ -1503,11 +1526,11 @@ export class MermaidCanvasView {
         },
         {
           icon: ICONS.palette,
-          title: 'Colors',
+          title: t('ui.colors'),
           panel: {
-            title: 'Colors',
+            title: t('ui.colors'),
             sections: (['fill', 'stroke', 'color'] as const).map((prop) =>
-              this.colorSection(prop === 'fill' ? 'Fill' : prop === 'stroke' ? 'Border' : 'Text', (value) =>
+              this.colorSection(t(prop === 'fill' ? 'ui.fill' : prop === 'stroke' ? 'ui.border' : 'ui.text'), (value) =>
                 this.editor.dispatch({ type: 'setNodeColor', id: node.id, prop, value }),
               ),
             ),
@@ -1515,7 +1538,7 @@ export class MermaidCanvasView {
         },
         {
           icon: ICONS.copy,
-          title: 'Duplicate',
+          title: t('ui.duplicate'),
           onClick: () => this.editor.dispatch({ type: 'duplicateNode', id: node.id }),
         },
         rename,
@@ -1524,52 +1547,21 @@ export class MermaidCanvasView {
     }
 
     if (flowchart && id.startsWith('subgraph:')) {
-      return [{ icon: ICONS.pencil, title: 'Rename subgraph', onClick: () => this.editEntityLabel(id) }]
+      return [{ icon: ICONS.pencil, title: t('ui.renameSubgraph'), onClick: () => this.editEntityLabel(id) }]
     }
 
     if (flowchart && id.startsWith('edge:')) {
       const edge = flowchart.edges.find((e) => e.entityId === id)
       if (!edge) return []
-      const kinds: Array<{ line: EdgeLine; arrowEnd: EdgeArrow; g: string; t: string }> = [
-        { line: 'solid', arrowEnd: 'arrow', g: '—▶', t: 'solid arrow' },
-        { line: 'dotted', arrowEnd: 'arrow', g: '⋯▶', t: 'dotted arrow' },
-        { line: 'thick', arrowEnd: 'arrow', g: '═▶', t: 'thick arrow' },
-        { line: 'solid', arrowEnd: 'open', g: '——', t: 'solid open' },
-        { line: 'dotted', arrowEnd: 'open', g: '⋯⋯', t: 'dotted open' },
-        { line: 'thick', arrowEnd: 'open', g: '══', t: 'thick open' },
-        { line: 'solid', arrowEnd: 'cross', g: '—✕', t: 'solid cross' },
-        { line: 'solid', arrowEnd: 'circle', g: '—●', t: 'solid circle' },
-      ]
       return [
-        {
-          icon: ICONS.arrowRight,
-          title: 'Edge type',
-          panel: {
-            title: 'Edge type',
-            items: kinds.map((k) => ({
-              glyph: k.g,
-              title: k.t,
-              selected: edge.seg.line === k.line && edge.seg.arrowEnd === k.arrowEnd,
-              onClick: () =>
-                this.editor.dispatch({ type: 'setEdgeStyle', edgeId: id, line: k.line, arrowEnd: k.arrowEnd }),
-            })),
-          },
-        },
-        {
-          icon: ICONS.palette,
-          title: 'Edge color',
-          panel: {
-            title: 'Edge color',
-            sections: [this.colorSection('Stroke', (value) => this.editor.dispatch({ type: 'setEdgeColor', edgeId: id, value }))],
-          },
-        },
-        {
-          icon: ICONS.arrowLeftRight,
-          title: 'Reverse direction',
-          onClick: () => this.editor.dispatch({ type: 'reverseEdge', edgeId: id }),
-        },
-        rename,
-        del,
+        ...(['solid', 'dotted', 'thick'] as const).map((line) => ({
+          glyph: t(`edge.${line}`),
+          title: t(`edge.${line}`),
+          active: edge.seg.line === line,
+          onClick: () => this.editor.dispatch({ type: 'setEdgeStyle', edgeId: id, line, arrowEnd: 'arrow', preserveLabelForm: true }),
+        })),
+        { glyph: t('edge.label'), title: t('edge.label'), onClick: () => this.editEntityLabel(id) },
+        { glyph: t('edge.delete'), title: t('edge.delete'), danger: true, onClick: () => this.editor.deleteEntities([id]) },
       ]
     }
 
@@ -1586,12 +1578,12 @@ export class MermaidCanvasView {
       return [
         {
           icon: ICONS.square,
-          title: 'State type',
+          title: t('ui.stateType'),
           panel: {
-            title: 'State type',
+            title: t('ui.stateType'),
             items: types.map((k) => ({
               glyph: k.g,
-              title: k.t,
+              title: t(`state.${k.t}`),
               selected: (s.stereotype ?? 'state') === k.t,
               onClick: () => this.editor.dispatch({ type: 'st.setStateType', id: s.id, stype: k.t }),
             })),
@@ -1599,19 +1591,19 @@ export class MermaidCanvasView {
         },
         {
           icon: ICONS.stickyNote,
-          title: 'Add note',
+          title: t('ui.addNote'),
           panel: {
-            title: 'Note',
+            title: t('ui.note'),
             items: (['left', 'right'] as const).map((side) => ({
               glyph: side === 'left' ? '◧' : '◨',
-              title: `Note ${side}`,
+              title: t('ui.noteSide', { name: t(`ui.${side}`) }),
               onClick: () => this.editor.dispatch({ type: 'st.addStateNote', id: s.id, side }),
             })),
           },
         },
         {
           icon: ICONS.frame,
-          title: 'Move to composite',
+          title: t('ui.moveToComposite'),
           onClick: () => this.editor.dispatch({ type: 'st.moveToComposite', id: s.id }),
         },
         rename,
@@ -1622,7 +1614,7 @@ export class MermaidCanvasView {
       return [
         {
           icon: ICONS.arrowLeftRight,
-          title: 'Reverse direction',
+          title: t('ui.reverseDirection'),
           onClick: () => this.editor.dispatch({ type: 'st.reverseTransition', transId: id }),
         },
         rename,
@@ -1637,7 +1629,7 @@ export class MermaidCanvasView {
       return [
         {
           icon: ICONS.listPlus,
-          title: 'Add member',
+          title: t('ui.addMember'),
           onClick: () => {
             const res = this.editor.dispatch({ type: 'cl.addMember', id: c.id, text: '+attribute' })
             void res
@@ -1645,18 +1637,18 @@ export class MermaidCanvasView {
         },
         {
           icon: ICONS.braces,
-          title: 'Annotation',
+          title: t('ui.annotation'),
           panel: {
-            title: 'Annotation',
+            title: t('ui.annotation'),
             items: [
               ...annotations.map((a) => ({
-                glyph: a,
-                title: `<<${a}>>`,
+                glyph: t(`annotation.${a}`),
+                title: t(`annotation.${a}`),
                 onClick: () => this.editor.dispatch({ type: 'cl.setAnnotation', id: c.id, annotation: a }),
               })),
               {
-                glyph: 'none',
-                title: 'Remove annotation',
+                glyph: t('ui.none'),
+                title: t('ui.removeAnnotation'),
                 onClick: () => this.editor.dispatch({ type: 'cl.setAnnotation', id: c.id, annotation: null }),
               },
             ],
@@ -1664,10 +1656,10 @@ export class MermaidCanvasView {
         },
         {
           icon: ICONS.stickyNote,
-          title: 'Add note',
+          title: t('ui.addNote'),
           onClick: () => this.editor.dispatch({ type: 'cl.addNoteFor', id: c.id }),
         },
-        { icon: ICONS.pencil, title: 'Rename class', onClick: () => this.editEntityLabel(id) },
+        { icon: ICONS.pencil, title: t('ui.renameClass'), onClick: () => this.editEntityLabel(id) },
         del,
       ]
     }
@@ -1675,21 +1667,21 @@ export class MermaidCanvasView {
       const r = this.editor.result.classGraph.relations.find((rr) => rr.entityId === id)
       if (!r) return []
       const kinds: Array<{ op: string; g: string; t: string }> = [
-        { op: '<|--', g: '◁—', t: 'inheritance' },
-        { op: '*--', g: '◆—', t: 'composition' },
-        { op: 'o--', g: '◇—', t: 'aggregation' },
-        { op: '-->', g: '—▶', t: 'association' },
-        { op: '--', g: '——', t: 'link (solid)' },
-        { op: '..>', g: '⋯▶', t: 'dependency' },
-        { op: '..|>', g: '⋯▷', t: 'realization' },
-        { op: '..', g: '⋯⋯', t: 'link (dashed)' },
+        { op: '<|--', g: '◁—', t: t('relation.inheritance') },
+        { op: '*--', g: '◆—', t: t('relation.composition') },
+        { op: 'o--', g: '◇—', t: t('relation.aggregation') },
+        { op: '-->', g: '—▶', t: t('relation.association') },
+        { op: '--', g: '——', t: t('relation.solid') },
+        { op: '..>', g: '⋯▶', t: t('relation.dependency') },
+        { op: '..|>', g: '⋯▷', t: t('relation.realization') },
+        { op: '..', g: '⋯⋯', t: t('relation.dashed') },
       ]
       return [
         {
           icon: ICONS.arrowRight,
-          title: 'Relation type',
+          title: t('ui.relationType'),
           panel: {
-            title: 'Relation type',
+            title: t('ui.relationType'),
             items: kinds.map((k) => ({
               glyph: k.g,
               title: k.t,
@@ -1701,12 +1693,12 @@ export class MermaidCanvasView {
         },
         {
           icon: ICONS.arrowLeftRight,
-          title: 'Reverse direction',
+          title: t('ui.reverseDirection'),
           onClick: () => this.editor.dispatch({ type: 'cl.reverseRelation', relId: id }),
         },
         {
           glyph: '1:1',
-          title: 'Cardinality (e.g. 1, 0..1, 1..*, *)',
+          title: t('ui.cardinality'),
           onClick: () => {
             const anchor = this.entityElement(id)
             if (!anchor) return
@@ -1738,10 +1730,10 @@ export class MermaidCanvasView {
       return [
         {
           icon: ICONS.listPlus,
-          title: 'Add attribute',
+          title: t('ui.addAttribute'),
           onClick: () => this.editor.dispatch({ type: 'er.addAttribute', id: e.id }),
         },
-        { icon: ICONS.pencil, title: 'Rename entity', onClick: () => this.editEntityLabel(id) },
+        { icon: ICONS.pencil, title: t('ui.renameEntity'), onClick: () => this.editEntityLabel(id) },
         del,
       ]
     }
@@ -1756,12 +1748,12 @@ export class MermaidCanvasView {
       ] as const
       const cardPanel = (side: 'left' | 'right'): PopoverAction => ({
         icon: side === 'left' ? ICONS.arrowLeftToLine : ICONS.arrowRightToLine,
-        title: `${side === 'left' ? 'Source' : 'Target'} cardinality`,
+        title: t(side === 'left' ? 'ui.sourceCardinality' : 'ui.targetCardinality'),
         panel: {
-          title: `${side === 'left' ? r.source : r.target} cardinality`,
+          title: t('ui.namedCardinality', { name: side === 'left' ? r.source : r.target }),
           items: cards.map((k) => ({
             glyph: k.g,
-            title: k.c,
+            title: t(`card.${k.c}`),
             onClick: () => this.editor.dispatch({ type: 'er.setCardinality', relId: id, side, card: k.c }),
           })),
         },
@@ -1771,7 +1763,7 @@ export class MermaidCanvasView {
         cardPanel('right'),
         {
           icon: r.stmt.line === '--' ? ICONS.minus : ICONS.ellipsis,
-          title: r.stmt.line === '--' ? 'Make non-identifying (dashed)' : 'Make identifying (solid)',
+          title: t(r.stmt.line === '--' ? 'ui.nonIdentifying' : 'ui.identifying'),
           onClick: () => this.editor.dispatch({ type: 'er.setIdentifying', relId: id, identifying: r.stmt.line !== '--' }),
         },
         rename,
@@ -1783,10 +1775,10 @@ export class MermaidCanvasView {
       const s = this.editor.result.pie.slices.find((sl) => sl.entityId === id)
       if (!s) return []
       return [
-        { icon: ICONS.hash, title: 'Edit value', onClick: () => this.editEntityLabel(id) },
+        { icon: ICONS.hash, title: t('ui.editValue'), onClick: () => this.editEntityLabel(id) },
         {
           icon: ICONS.pencil,
-          title: 'Edit label',
+          title: t('ui.editLabel'),
           onClick: () => {
             const anchor = this.entityElement(id)
             if (anchor) {
@@ -1802,18 +1794,18 @@ export class MermaidCanvasView {
     }
 
     if (this.editor.result.gantt && id.startsWith('task:')) {
-      const t = this.editor.result.gantt.tasks.find((tk) => tk.entityId === id)
-      if (!t) return []
+      const task = this.editor.result.gantt.tasks.find((tk) => tk.entityId === id)
+      if (!task) return []
       return [
-        { icon: ICONS.pencil, title: 'Rename task', onClick: () => this.editEntityLabel(id) },
+        { icon: ICONS.pencil, title: t('ui.renameTask'), onClick: () => this.editEntityLabel(id) },
         {
           icon: ICONS.calendar,
-          title: 'Edit schedule (id, start, duration)',
+          title: t('ui.editSchedule'),
           onClick: () => {
             const anchor = this.entityElement(id)
             if (anchor) {
               this.popover.hide()
-              this.openOverlayEditor(anchor, t.meta, (v) =>
+              this.openOverlayEditor(anchor, task.meta, (v) =>
                 this.editor.dispatch({ type: 'gantt.setTaskMeta', taskId: id, meta: v }, 'canvas'),
               )
             }
@@ -1824,7 +1816,7 @@ export class MermaidCanvasView {
     }
 
     if (this.editor.result.lineItems && id.startsWith('item:')) {
-      return [{ icon: ICONS.pencil, title: 'Edit line', onClick: () => this.editEntityLabel(id) }, del]
+      return [{ icon: ICONS.pencil, title: t('ui.editLine'), onClick: () => this.editEntityLabel(id) }, del]
     }
 
     if (sequence && id.startsWith('participant:')) {
@@ -1843,18 +1835,18 @@ export class MermaidCanvasView {
       return [
         {
           icon: ICONS.user,
-          title: 'Participant type',
+          title: t('ui.participantType'),
           panel: {
-            title: 'Participant type',
+            title: t('ui.participantType'),
             items: PARTICIPANT_TYPES.map((pt): PopoverPanelItem => ({
               glyph: glyphs[pt],
-              title: pt,
+              title: t(`participant.${pt}`),
               selected: p.ptype === pt,
               onClick: () => this.editor.dispatch({ type: 'seq.setParticipantType', id: p.id, ptype: pt }),
             })),
           },
         },
-        { icon: ICONS.pencil, title: 'Rename', onClick: () => this.editEntityLabel(id) },
+        { icon: ICONS.pencil, title: t('ui.rename'), onClick: () => this.editEntityLabel(id) },
         del,
       ]
     }
@@ -1876,12 +1868,12 @@ export class MermaidCanvasView {
         return [
           {
             icon: ICONS.arrowRight,
-            title: 'Message type',
+            title: t('ui.messageType'),
             panel: {
-              title: 'Message type',
+              title: t('ui.messageType'),
               items: MESSAGE_OPS.map((m): PopoverPanelItem => ({
                 glyph: glyphs[m.op],
-                title: m.label,
+                title: t(`message.${m.op}`),
                 selected: ev.stmt.op === m.op,
                 onClick: () => this.editor.dispatch({ type: 'seq.setMessageOp', eventId: id, op: m.op }),
               })),
@@ -1889,17 +1881,17 @@ export class MermaidCanvasView {
           },
           {
             icon: ICONS.arrowLeftRight,
-            title: 'Reverse direction',
+            title: t('ui.reverseDirection'),
             onClick: () => this.editor.dispatch({ type: 'seq.reverseMessage', eventId: id }),
           },
           {
             icon: ICONS.group,
-            title: 'Wrap in fragment',
+            title: t('ui.wrapInFragment'),
             panel: {
-              title: 'Fragment',
+              title: t('ui.fragment'),
               items: (['loop', 'alt', 'opt', 'par', 'critical', 'break', 'rect'] as const).map((kind) => ({
-                glyph: kind,
-                title: `Wrap in ${kind}`,
+                glyph: t(`fragment.${kind}`),
+                title: t('ui.wrapIn', { name: t(`fragment.${kind}`) }),
                 onClick: () => this.editor.dispatch({ type: 'seq.wrapInFragment', eventId: id, kind }),
               })),
             },
@@ -2019,7 +2011,8 @@ export class MermaidCanvasView {
       btn.type = 'button'
       btn.className = 'mw-lifeline-plus'
       btn.textContent = '+'
-      btn.title = 'Insert here (self message / note)'
+      btn.title = t('ui.insertHere')
+      btn.setAttribute('aria-label', btn.title)
       btn.style.left = `${x}px`
       btn.style.top = `${anchor.y}px`
       btn.addEventListener('pointerenter', () => {
@@ -2050,6 +2043,7 @@ export class MermaidCanvasView {
       const b = document.createElement('button')
       b.type = 'button'
       b.textContent = label
+      b.setAttribute('aria-label', label)
       b.addEventListener('click', (e) => {
         e.stopPropagation()
         this.clearLifelineUi()
@@ -2057,7 +2051,7 @@ export class MermaidCanvasView {
       })
       menu.appendChild(b)
     }
-    item('↩ Self message', () => {
+    item(t('ui.selfMessage'), () => {
       const res = this.editor.dispatch(
         { type: 'seq.addMessage', source: participantId, target: participantId, text: 'message', afterEvent },
         'canvas',
@@ -2072,9 +2066,9 @@ export class MermaidCanvasView {
         )
         if (res?.created?.[0]) this.pendingEditEntity = res.created[0]
       })
-    note('▭ Note over', 'over')
-    note('▭ Note left', 'left of')
-    note('▭ Note right', 'right of')
+    note(t('ui.noteOver'), 'over')
+    note(t('ui.noteLeft'), 'left of')
+    note(t('ui.noteRight'), 'right of')
 
     this.overlayHost.appendChild(menu)
     this.plusMenu = menu
@@ -2126,6 +2120,8 @@ export class MermaidCanvasView {
   }
 
   destroy() {
+    this.gestures.destroy()
+    this.notices.destroy()
     if (this.renderTimer) clearTimeout(this.renderTimer)
     if (this.lifelineClearTimer) clearTimeout(this.lifelineClearTimer)
     if (this.inPlaceSession?.liveTimer) clearTimeout(this.inPlaceSession.liveTimer)

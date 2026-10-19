@@ -1,4 +1,7 @@
-import { useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
+import { t, getLocale, setLocale, onLocaleChange } from '@inkeep/mermaid-wysiwyg-dom'
+import { changedLines, flashField, flashLines } from './changedLines'
+import { useEffect, useRef, useState, useSyncExternalStore, type ButtonHTMLAttributes } from 'react'
 import mermaid from 'mermaid'
 import {
   DIAGRAM_TYPES,
@@ -126,18 +129,11 @@ function themeConfig(theme: string) {
     : { theme, themeVariables: {} }
 }
 
-const SHAPES: Array<{ id: ShapeId; label: string }> = [
-  { id: 'rect', label: 'Rectangle' },
-  { id: 'round', label: 'Rounded' },
-  { id: 'stadium', label: 'Stadium' },
-  { id: 'diamond', label: 'Diamond' },
-  { id: 'hexagon', label: 'Hexagon' },
-  { id: 'circle', label: 'Circle' },
-  { id: 'cylinder', label: 'Cylinder' },
-  { id: 'subroutine', label: 'Subroutine' },
-]
+const SHAPES: ShapeId[] = ['rect', 'round', 'stadium', 'diamond', 'hexagon', 'circle', 'cylinder', 'subroutine']
 
 export default function App() {
+  useSyncExternalStore(onLocaleChange, getLocale)
+  useEffect(() => { document.documentElement.lang = getLocale(); document.title = t('app.title') })
   const [sampleIndex, setSampleIndex] = useState(0)
   const [theme, setTheme] = useState('ink')
   const [readOnly, setReadOnly] = useState(false)
@@ -155,38 +151,40 @@ export default function App() {
       <header className="topbar">
         <div className="brand">
           <span className="logo" />
-          mermaid-wysiwyg
+          {t('app.title')}
           <span className="sep">/</span>
-          <span className="sub">playground</span>
+          <span className="sub">{t('app.playground')}</span>
         </div>
         <div className="controls">
-          <select value={theme} onChange={(e) => setTheme(e.target.value)} title="Mermaid theme">
-            {['ink', 'dark', 'default', 'forest', 'neutral'].map((t) => (
-              <option key={t} value={t}>{t}</option>
+          <select value={theme} onChange={(e) => setTheme(e.target.value)} title={t('app.theme')} aria-label={t('app.theme')}>
+            {['ink', 'dark', 'default', 'forest', 'neutral'].map((themeId) => (
+              <option key={themeId} value={themeId}>{t(`theme.${themeId}`)}</option>
             ))}
           </select>
           <label className="switch">
-            <input type="checkbox" checked={readOnly} onChange={(e) => setReadOnly(e.target.checked)} />
-            Read-only
+            <input type="checkbox" aria-label={t('app.readonly')} checked={readOnly} onChange={(e) => setReadOnly(e.target.checked)} />
+            {t('app.readonly')}
           </label>
-          <a href="https://github.com/inkeep/mermaid-wysiwyg" target="_blank" rel="noreferrer">GitHub</a>
+          <a href="https://github.com/inkeep/mermaid-wysiwyg" target="_blank" rel="noreferrer">{t('app.github')}</a>
+          <span id="workspace-actions" />
+          <Button aria-label={t('app.language')} onClick={() => setLocale(getLocale() === 'en' ? 'zh-CN' : 'en')}>{t('app.zh')} / {t('app.en')}</Button>
         </div>
       </header>
       <div className="body">
         <aside className="sidebar">
-          <div className="side-label">Diagram types</div>
+          <div className="side-label">{t('app.diagrams')}</div>
           {SAMPLES.map((s, i) => {
-            const t = DIAGRAM_TYPES.find((d) => d.id === s.typeId)
+            const info = DIAGRAM_TYPES.find((d) => d.id === s.typeId)
             return (
-              <button key={s.title} className={`side-item${i === sampleIndex ? ' active' : ''}`} onClick={() => setSampleIndex(i)}>
-                <i className={`dot ${t?.capability ?? 'render'}`} />
-                {s.title}
-              </button>
+              <Button key={`${s.typeId}-${i}`} aria-label={t(i === 0 ? 'sample.orders' : i === 1 ? 'sample.architecture' : `diagram.${s.typeId}`)} className={`side-item${i === sampleIndex ? ' active' : ''}`} onClick={() => setSampleIndex(i)}>
+                <i className={`dot ${info?.capability ?? 'render'}`} />
+                {t(i === 0 ? 'sample.orders' : i === 1 ? 'sample.architecture' : `diagram.${s.typeId}`)}
+              </Button>
             )
           })}
           <div className="legend">
-            <span><i className="dot edit" /> editable</span>
-            <span><i className="dot render" /> render</span>
+            <span><i className="dot edit" /> {t('app.editable')}</span>
+            <span><i className="dot render" /> {t('app.render')}</span>
           </div>
         </aside>
         {!waitForZenuml && <Workspace key={sampleIndex} code={sample.code} theme={theme} readOnly={readOnly} />}
@@ -199,6 +197,9 @@ function Workspace({ code, theme, readOnly }: { code: string; theme: string; rea
   const { editor } = useMermaidEditor(code)
   const [view, setView] = useState<MermaidCanvasView | null>(null)
   const [tool, setToolState] = useState<Tool>('select')
+  const fileInput = useRef<HTMLInputElement>(null)
+  const [changed, setChanged] = useState(0)
+  const [copyStatus, setCopyStatus] = useState<string | null>(null)
   const [status, setStatus] = useState<string | null>(null)
   const [pane, setPane] = useState<'codemirror' | 'monaco'>('codemirror')
 
@@ -206,6 +207,16 @@ function Workspace({ code, theme, readOnly }: { code: string; theme: string; rea
 
   // subscribe to the editor so toolbar state (undo/redo/selection) stays live
   useEditorCode(editor)
+  useEffect(() => editor.on('change', event => setChanged(changedLines(event).length)), [editor])
+  const save = () => {
+    const url = URL.createObjectURL(new Blob([editor.code], { type: 'text/plain;charset=utf-8' }))
+    const a = document.createElement('a'); a.href = url; a.download = t('app.filename'); a.click()
+    setTimeout(() => URL.revokeObjectURL(url), 1000)
+  }
+  const copy = async () => {
+    try { await navigator.clipboard.writeText(editor.code); setCopyStatus('toast.copied') }
+    catch { setCopyStatus('toast.copyFailed') }
+  }
   // status tracks render outcomes; the view emits after every (debounced)
   // render, including the undo-back-to-last-good path
   useEffect(() => {
@@ -220,26 +231,39 @@ function Workspace({ code, theme, readOnly }: { code: string; theme: string; rea
   }
 
   const typeInfo = editor.result.typeInfo
-  const editable = typeInfo?.capability === 'edit' && !readOnly
+  const canvasReadOnly = readOnly || typeInfo?.capability !== 'edit' || ['sequence', 'gantt'].includes(typeInfo?.id ?? '')
+  const editable = !canvasReadOnly
 
   return (
     <>
+      {document.getElementById('workspace-actions') && createPortal(<>
+        <span role="status">{t(status ? 'status.parseError' : 'status.synced', { n: changed })}</span>
+        <Button aria-label={t('tb.copy')} onClick={copy}>{t('tb.copy')}</Button>
+      </>, document.getElementById('workspace-actions')!)}
+      {copyStatus && <div className="copy-toast" role="status" onClick={() => setCopyStatus(null)}>{t(copyStatus)}</div>}
       <main className="main">
-        <div className={`toolbar${editable ? '' : ' disabled'}`}>
-          <button className={tool === 'select' ? 'primary' : ''} onClick={() => setTool('select')}>Select</button>
-          <button className={tool === 'connect' ? 'primary' : ''} onClick={() => setTool('connect')}>Connect</button>
-          <TypeTools editor={editor} view={view} />
+        <div className="toolbar">
+          <input ref={fileInput} type="file" hidden accept=".mmd,.mermaid,.txt" aria-label={t('app.fileInput')} onChange={async e => {
+            const file = e.target.files?.[0]
+            if (file) editor.setCode(await file.text(), 'external')
+            e.target.value = ''
+          }} />
+          <Button aria-label={t('tb.open')} onClick={() => fileInput.current?.click()}>{t('tb.open')}</Button>
+          <Button aria-label={t('tb.save')} onClick={save}>{t('tb.save')}</Button>
+          <Button className={tool === 'select' ? 'primary' : ''} disabled={!editable} onClick={() => setTool('select')}>{t('app.select')}</Button>
+          <Button className={tool === 'connect' ? 'primary' : ''} disabled={!editable} onClick={() => setTool('connect')}>{t('app.connect')}</Button>
+          {editable && <TypeTools editor={editor} view={view} />}
           <span className="spacer" />
-          <button disabled={!editor.selection.length} className="danger" onClick={() => editor.deleteEntities(editor.selection)}>Delete</button>
-          <button disabled={!editor.canUndo} onClick={() => editor.undo()}>Undo</button>
-          <button disabled={!editor.canRedo} onClick={() => editor.redo()}>Redo</button>
+          <Button disabled={!editable || !editor.selection.length} className="danger" onClick={() => editor.deleteEntities(editor.selection)}>{t('edge.delete')}</Button>
+          <Button disabled={!editor.canUndo} onClick={() => editor.undo()}>{t('tb.undo')}</Button>
+          <Button disabled={!editor.canRedo} onClick={() => editor.redo()}>{t('tb.redo')}</Button>
         </div>
         <MermaidCanvas
           editor={editor}
           mermaid={mermaid}
           mermaidConfig={{ securityLevel: 'loose', ...themeConfig(theme) }}
           accentColor="#69a3ff"
-          readOnly={readOnly}
+          readOnly={canvasReadOnly}
           onReady={setView}
           className="canvas"
           style={{ height: '100%' }}
@@ -248,25 +272,25 @@ function Workspace({ code, theme, readOnly }: { code: string; theme: string; rea
       <section className="codepanel">
         <div className="panel-title">
           <span className="panel-title-left">
-            Mermaid source
+            {t('app.source')}
             <span className="seg">
-              <button className={pane === 'codemirror' ? 'on' : ''} onClick={() => setPane('codemirror')}>
-                CodeMirror
-              </button>
-              <button className={pane === 'monaco' ? 'on' : ''} onClick={() => setPane('monaco')}>
-                Monaco
-              </button>
+              <Button className={pane === 'codemirror' ? 'on' : ''} onClick={() => setPane('codemirror')}>
+                {t('app.codemirror')}
+              </Button>
+              <Button className={pane === 'monaco' ? 'on' : ''} onClick={() => setPane('monaco')}>
+                {t('app.monaco')}
+              </Button>
             </span>
           </span>
           {typeInfo && (
             <span className={`badge${typeInfo.capability === 'edit' ? ' edit' : ''}`}>
-              {typeInfo.name} · {typeInfo.capability === 'edit' ? 'WYSIWYG' : 'render'}
+              {t(`diagram.${typeInfo.id}`)} · {t(editable ? 'app.editable' : 'app.render')}
             </span>
           )}
         </div>
         {pane === 'monaco' ? <MonacoPane editor={editor} /> : <CodePane editor={editor} />}
         <div className="statusbar">
-          {status ? <span className="err">✕ {status}</span> : <span className="ok">✓ mermaid parse ok</span>}
+          {status ? <span className="err">✕ {t('status.parseError')}</span> : <span className="ok">✓ {t('status.synced', { n: changed })}</span>}
         </div>
       </section>
     </>
@@ -290,12 +314,13 @@ function TypeTools({ editor, view }: { editor: MermaidWysiwygEditor; view: Merma
   if (typeId === 'flowchart') {
     return (
       <>
-        <select value="" title="Add a node" onChange={(e) => e.target.value && view?.addNode(e.target.value as ShapeId)}>
-          <option value="">+ Node…</option>
+        <select value="" title={t('tb.addNode')} aria-label={t('tb.addNode')} onChange={(e) => e.target.value && view?.addNode(e.target.value as ShapeId)}>
+          <option value="">{t('tb.addNode')}</option>
           {SHAPES.map((s) => (
-            <option key={s.id} value={s.id}>{s.label}</option>
+            <option key={s} value={s}>{t(`shape.${s}`)}</option>
           ))}
         </select>
+        <Button onClick={() => editor.dispatch({ type: 'addSubgraph', title: t('ui.newGroup') })}>{t('tb.addGroup')}</Button>
         <DirectionSelect
           value={editor.result.flowchart?.direction ?? 'TD'}
           options={['TD', 'LR', 'BT', 'RL']}
@@ -307,25 +332,25 @@ function TypeTools({ editor, view }: { editor: MermaidWysiwygEditor; view: Merma
   if (typeId === 'sequence') {
     return (
       <>
-        <select value="" title="Add a participant" onChange={(e) => e.target.value && editor.dispatch({ type: 'seq.addParticipant', ptype: e.target.value as ParticipantType })}>
-          <option value="">+ Participant…</option>
-          {PARTICIPANT_TYPES.map((t) => (
-            <option key={t} value={t}>{t}</option>
+        <select value="" title={t('app.addParticipant')} aria-label={t('app.addParticipant')} onChange={(e) => e.target.value && editor.dispatch({ type: 'seq.addParticipant', ptype: e.target.value as ParticipantType })}>
+          <option value="">{t('app.addParticipant')}</option>
+          {PARTICIPANT_TYPES.map((pt) => (
+            <option key={pt} value={pt}>{t(`participant.${pt}`)}</option>
           ))}
         </select>
-        <button
+        <Button
           className={editor.result.sequence?.autonumber.enabled ? 'primary' : ''}
           onClick={() => editor.dispatch({ type: 'seq.toggleAutonumber' })}
         >
-          # Autonumber
-        </button>
+          {t('app.autonumber')}
+        </Button>
       </>
     )
   }
   if (typeId === 'state') {
     return (
       <>
-        <button onClick={() => openEditorSoon(editor.dispatch({ type: 'st.addState', label: 'New state' })?.created)}>+ State</button>
+        <Button onClick={() => openEditorSoon(editor.dispatch({ type: 'st.addState', label: t('app.newState') })?.created)}>{t('app.addState')}</Button>
         <DirectionSelect
           value={editor.result.state?.direction?.value ?? 'TB'}
           options={['TB', 'LR', 'BT', 'RL']}
@@ -337,7 +362,7 @@ function TypeTools({ editor, view }: { editor: MermaidWysiwygEditor; view: Merma
   if (typeId === 'class') {
     return (
       <>
-        <button onClick={() => openEditorSoon(editor.dispatch({ type: 'cl.addClass' })?.created)}>+ Class</button>
+        <Button onClick={() => openEditorSoon(editor.dispatch({ type: 'cl.addClass' })?.created)}>{t('app.addClass')}</Button>
         <DirectionSelect
           value={editor.result.classGraph?.direction?.value ?? 'TB'}
           options={['TB', 'LR', 'BT', 'RL']}
@@ -347,16 +372,16 @@ function TypeTools({ editor, view }: { editor: MermaidWysiwygEditor; view: Merma
     )
   }
   if (typeId === 'er') {
-    return <button onClick={() => openEditorSoon(editor.dispatch({ type: 'er.addEntity' })?.created)}>+ Entity</button>
+    return <Button onClick={() => openEditorSoon(editor.dispatch({ type: 'er.addEntity' })?.created)}>{t('app.addEntity')}</Button>
   }
   if (typeId === 'pie') {
-    return <button onClick={() => openEditorSoon(editor.dispatch({ type: 'pie.addSlice' })?.created)}>+ Slice</button>
+    return <Button onClick={() => openEditorSoon(editor.dispatch({ type: 'pie.addSlice' })?.created)}>{t('app.addSlice')}</Button>
   }
   if (typeId === 'gantt') {
-    return <button onClick={() => openEditorSoon(editor.dispatch({ type: 'gantt.addTask' })?.created)}>+ Task</button>
+    return <Button onClick={() => openEditorSoon(editor.dispatch({ type: 'gantt.addTask' })?.created)}>{t('app.addTask')}</Button>
   }
   if (editor.result.lineItems) {
-    return <button onClick={() => openEditorSoon(editor.dispatch({ type: 'li.addItem' })?.created)}>+ Item</button>
+    return <Button onClick={() => openEditorSoon(editor.dispatch({ type: 'li.addItem' })?.created)}>{t('app.addItem')}</Button>
   }
   return null
 }
@@ -364,9 +389,9 @@ function TypeTools({ editor, view }: { editor: MermaidWysiwygEditor; view: Merma
 function DirectionSelect({ value, options, onChange }: { value: string; options: string[]; onChange: (d: string) => void }) {
   const normalized = value === 'TD' && options.includes('TB') ? 'TB' : value === 'TB' && options.includes('TD') ? 'TD' : value
   return (
-    <select value={normalized} title="Layout direction" onChange={(e) => onChange(e.target.value)}>
+    <select value={normalized} title={t('app.direction')} aria-label={t('app.direction')} onChange={(e) => onChange(e.target.value)}>
       {options.map((d) => (
-        <option key={d} value={d}>{d}</option>
+        <option key={d} value={d}>{t(`direction.${d}`)}</option>
       ))}
     </select>
   )
@@ -376,8 +401,21 @@ function CodePane({ editor }: { editor: MermaidWysiwygEditor }) {
   const ref = useRef<HTMLDivElement>(null)
   useEffect(() => {
     if (!ref.current) return
-    const cm = new MermaidCodeMirror(ref.current, editor)
-    return () => cm.destroy()
+    const cm = new MermaidCodeMirror(ref.current, editor, [flashField])
+    cm.view.contentDOM.setAttribute('aria-label', t('app.codeEditor'))
+    const offLocale = onLocaleChange(() => cm.view.contentDOM.setAttribute('aria-label', t('app.codeEditor')))
+    let timer: ReturnType<typeof setTimeout>
+    const off = editor.on('change', event => {
+      cm.view.dispatch({ effects: flashLines.of(changedLines(event)) })
+      clearTimeout(timer)
+      timer = setTimeout(() => cm.view.dispatch({ effects: flashLines.of([]) }), 2000)
+    })
+    return () => { clearTimeout(timer); offLocale(); off(); cm.destroy() }
   }, [editor])
   return <div className="codepane" ref={ref} />
+}
+
+function Button(props: ButtonHTMLAttributes<HTMLButtonElement>) {
+  const label = props['aria-label'] ?? (typeof props.children === 'string' ? props.children : undefined)
+  return <button type="button" {...props} aria-label={label} title={props.title ?? label} />
 }

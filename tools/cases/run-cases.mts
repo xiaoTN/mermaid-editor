@@ -1,3 +1,4 @@
+import { getLocale, setLocale, messages, listKeys } from '../../packages/dom/src/i18n/index.ts'
 import { spawnSync } from 'node:child_process'
 import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { join, relative } from 'node:path'
@@ -111,8 +112,14 @@ function case04(): Scenario[] {
   ] as const).map(([name, target, line, content]) => ({
     sample: 2, name,
     edit: (editor) => retarget(editor, 'A', target, 'B'),
-    allowed: [replace(line, content)],
-  }))
+    allowed: [replace(line, `    ${target}`, content)],
+    verify: editor => { check(graph(editor).nodeById.has(target), `旧节点 ${target} 丢失`) },
+  })).concat([{
+    sample: 2, name: 'D 改到 O，保留隐式 D',
+    edit: editor => retarget(editor, 'A', 'D', 'O'),
+    allowed: [replace(4, '    D', '    A -.-> O')],
+    verify: editor => { check(graph(editor).nodeById.has('D'), 'D 消失') },
+  }])
 }
 
 function case05(): Scenario[] {
@@ -182,6 +189,15 @@ function case11(): Scenario[] {
     edit: (editor) => retarget(editor, 'A', 'C', 'D'),
     allowed: [replace(2, '    A[方框] --> D', '    B(圆角) --> C((圆))')],
     verify: (editor) => { edge(editor, 'A', 'D'); edge(editor, 'B', 'C') },
+  }, {
+    sample: 5, name: '拒绝同一行重复边', allowed: [], expectedUndos: 0,
+    edit: editor => {
+      const before = editor.code, warnings: unknown[] = []
+      editor.on('warning', messages => warnings.push(messages))
+      const result = editor.dispatch({ type: 'retargetEdge', edgeId: edge(editor, 'A', 'C').entityId, end: 'source', nodeId: 'B' })!
+      check(result.edits.length === 0 && result.warnings?.[0]?.key === 'toast.dupEdge', '没有拒绝重复边')
+      check(warnings[0] === result.warnings && editor.code === before, 'warning 缺失或原文发生改动')
+    },
   }]
 }
 
@@ -213,7 +229,7 @@ function case14(): Scenario[] {
   return [{
     sample: 6,
     edit: (editor) => retarget(editor, 'x1', 'x2', 'id_2'),
-    allowed: [replace(5, '    x1 e1@--> id_2')],
+    allowed: [replace(5, '    x2', '    x1 e1@--> id_2')],
   }]
 }
 
@@ -221,7 +237,7 @@ function case15(): Scenario[] {
   return [{
     sample: 6,
     edit: (editor) => retarget(editor, 'D1', 'E1', 'B1'),
-    allowed: [replace(8, '    C1 --> D1; D1 --> B1')],
+    allowed: [replace(8, '    E1', '    C1 --> D1; D1 --> B1')],
   }]
 }
 
@@ -375,11 +391,11 @@ function case28(): Scenario[] {
   })), {
     sample: 4, name: '删节点只提示', allowed: [drop(7)],
     edit: (editor: MermaidWysiwygEditor) => {
-      const warnings: string[][] = []
+      const warnings: unknown[] = []
       editor.on('warning', (messages) => warnings.push(messages))
       const result = dispatch(editor, { type: 'deleteNode', id: 'a4' })
       check(result.warnings?.length === 2 && warnings[0] === result.warnings, 'class/click 的中文提示或 warning 事件缺失')
-      check(result.warnings.every((warning) => warning.includes('节点 a4，请手动处理')), '提示内容不正确')
+      check(result.warnings.every((warning) => warning.key === 'toast.nodeHasStyle' && warning.params?.name === 'a4'), '提示内容不正确')
     },
   }]
 }
@@ -393,7 +409,7 @@ function runScenario(number: string, scenario: Scenario, index: number): number 
   const source = join(samples, filename)
   const original = readFileSync(source)
   const before = original.toString('utf8')
-  const stem = `c${number}${index === 0 ? '' : `-${index + 1}`}`
+  const stem = `c${number}${getLocale() === 'en' ? '-en' : ''}${index === 0 ? '' : `-${index + 1}`}`
   const target = join(output, `${stem}.mmd`)
   const log = join(output, `${stem}.check.txt`)
   const started = performance.now()
@@ -472,13 +488,16 @@ for (const [number, makeScenarios] of cases) {
   const times: number[] = []
   try {
     const scenarios = makeScenarios()
-    for (const [variant, scenario] of scenarios.entries()) {
-      try {
-        const elapsed = runScenario(number, scenario, variant)
-        if (elapsed !== undefined) times.push(elapsed)
-      } catch (error) {
-        const reason = `${scenario.name ? `${scenario.name}：` : ''}${message(error)}`
-        failures.push(reason)
+    for (const locale of ['zh-CN', 'en'] as const) {
+      setLocale(locale)
+      for (const [variant, scenario] of scenarios.entries()) {
+        try {
+          const elapsed = runScenario(number, scenario, variant)
+          if (elapsed !== undefined) times.push(elapsed)
+        } catch (error) {
+          const reason = `${scenario.name ? `${scenario.name}：` : ''}${message(error)}`
+          failures.push(reason)
+        }
       }
     }
     if (failures.length) throw new Error(failures.join('；'))
@@ -492,6 +511,51 @@ for (const [number, makeScenarios] of cases) {
     const reason = message(error).replace(/\s+/g, ' ')
     print(`用例 ${number}：失败（${reason.length > 360 ? reason.slice(0, 360) + '…；详见 out/cases/c' + number + '*.check.txt' : reason}）`)
   }
+}
+const languageChecks: [string, string, () => void | Promise<void>][] = [
+  ['29', '默认中文；语言按钮位置待界面验收', () => {
+    check(messages['zh-CN']['tb.open'] === '打开', '缺少默认中文')
+    setLocale('zh-CN'); check(getLocale() === 'zh-CN', '中文选择失败')
+  }],
+  ['30', '英文语言包无中文；菜单 DOM 扫描由 dom vitest 覆盖，完整点击待界面验收', () => {
+    check(Object.values(messages.en).every(text => !/[\u3400-\u9fff]/u.test(text)), '英文语言包含中文')
+  }],
+  ['31', '切换前后中文样例代码字节一致', () => {
+    const bytes = readFileSync(join(samples, '01-chinese-basic.mmd'))
+    const editor = new MermaidWysiwygEditor({ code: bytes.toString('utf8') })
+    for (const locale of ['en', 'zh-CN'] as const) {
+      setLocale(locale)
+      check(Buffer.from(editor.code).equals(bytes) && !editor.canUndo, '语言切换改变了原文或历史')
+    }
+  }],
+  ['32', '重新加载模块读取已存语言；真实浏览器重启待界面验收', async () => {
+    const data = new Map<string, string>()
+    Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: { getItem: (key: string) => data.get(key) ?? null, setItem: (key: string, value: string) => data.set(key, value) } })
+    try {
+      for (const locale of ['en', 'zh-CN'] as const) {
+        setLocale(locale)
+        check(data.get('mermaid-editor.locale') === locale, '语言设置未保存')
+        const reloaded = await import(new URL(`../../packages/dom/src/i18n/index.ts?locale=${locale}`, import.meta.url).href)
+        check(reloaded.getLocale() === locale, '重新加载后语言错误')
+      }
+    } finally { Reflect.deleteProperty(globalThis, 'localStorage') }
+  }],
+  ['33', 'key 集合和非空值检查；界面源码扫描通过', () => {
+    check(JSON.stringify(listKeys()) === JSON.stringify(Object.keys(messages['zh-CN']).sort()), '中英 key 不一致')
+    check(Object.values(messages).every(bundle => Object.values(bundle).every(text => text.trim())), '语言包有空值')
+    for (const dir of ['packages/dom/src', 'apps/playground/src']) {
+      for (const file of readdirSync(join(root, dir), { recursive: true }).map(String).filter(file => /\.(ts|tsx)$/.test(file) && !file.startsWith('i18n'))) {
+        check(!/[\u3400-\u9fff]/u.test(readFileSync(join(root, dir, file), 'utf8')), `界面源码含硬编码中文：${dir}/${file}`)
+      }
+    }
+  }],
+  ['34', '1–28（含 22b）已分别在中英文执行；长英文菜单尺寸、拖动流畅度待界面验收', () => {
+    check(failed === 0, '前面的中英编辑用例失败')
+  }],
+]
+for (const [number, note, run] of languageChecks) {
+  try { await run(); passed++; print(`用例 ${number}：通过（${note}）`) }
+  catch (error) { failed++; print(`用例 ${number}：失败（${message(error)}）`) }
 }
 print(`合计：通过 ${passed}，失败 ${failed}；退出码 ${failed}`)
 writeFileSync(join(output, 'summary.txt'), report.join('\n') + '\n', 'utf8')

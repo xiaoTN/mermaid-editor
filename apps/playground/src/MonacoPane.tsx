@@ -1,3 +1,5 @@
+import { t, onLocaleChange } from '@inkeep/mermaid-wysiwyg-dom'
+import { changedLines } from './changedLines'
 import { useEffect, useRef } from 'react'
 import type { MermaidWysiwygEditor } from '@inkeep/mermaid-wysiwyg-core'
 import { bindMonaco, registerMermaidLanguage } from '@inkeep/mermaid-wysiwyg-monaco'
@@ -17,7 +19,7 @@ export function MonacoPane({ editor }: { editor: MermaidWysiwygEditor }) {
 
     void (async () => {
       const monaco = await import('monaco-editor')
-      const { default: EditorWorker } = await import('monaco-editor/esm/vs/editor/editor.worker?worker')
+      const { default: EditorWorker } = await import('monaco-editor/esm/vs/editor/editor.worker?worker&inline')
       ;(self as { MonacoEnvironment?: unknown }).MonacoEnvironment = { getWorker: () => new EditorWorker() }
       if (disposed) return
 
@@ -46,6 +48,7 @@ export function MonacoPane({ editor }: { editor: MermaidWysiwygEditor }) {
       })
 
       const me = monaco.editor.create(host, {
+        ariaLabel: t('app.codeEditor'),
         value: editor.code,
         language: 'mermaid',
         theme: 'ink-dark',
@@ -64,9 +67,18 @@ export function MonacoPane({ editor }: { editor: MermaidWysiwygEditor }) {
         lineNumbersMinChars: 3,
         padding: { top: 8 },
       })
+      const offLocale = onLocaleChange(() => me.updateOptions({ ariaLabel: t('app.codeEditor') }))
       const binding = bindMonaco(editor, me)
+      const flash = me.createDecorationsCollection()
+      let timer: ReturnType<typeof setTimeout>
+      const off = editor.on('change', event => {
+        flash.set(changedLines(event).map(n => ({ range: new monaco.Range(n, 1, n, 1), options: { isWholeLine: true, className: 'mw-changed-line' } })))
+        clearTimeout(timer)
+        timer = setTimeout(() => flash.clear(), 2000)
+      })
 
       cleanup = () => {
+        clearTimeout(timer); offLocale(); off(); flash.clear()
         binding.dispose()
         me.dispose()
       }

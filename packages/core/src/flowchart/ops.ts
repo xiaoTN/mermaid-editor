@@ -5,11 +5,12 @@ import { SHAPE_DELIMS, type ChainStmt, type EdgeArrow, type EdgeLine, type FlowS
 
 export type FlowchartOp =
   | { type: 'addNode'; shape?: ShapeId; label?: string; id?: string }
+  | { type: 'addSubgraph'; title: string }
   | { type: 'connect'; source: string; target: string; line?: EdgeLine; arrowEnd?: EdgeArrow; label?: string }
   | { type: 'renameNode'; id: string; label: string }
   | { type: 'setNodeShape'; id: string; shape: ShapeId }
   | { type: 'setEdgeLabel'; edgeId: string; label: string }
-  | { type: 'setEdgeStyle'; edgeId: string; line?: EdgeLine; arrowEnd?: EdgeArrow }
+  | { type: 'setEdgeStyle'; edgeId: string; line?: EdgeLine; arrowEnd?: EdgeArrow; preserveLabelForm?: boolean }
   | { type: 'setDirection'; direction: string }
   | { type: 'deleteNode'; id: string }
   | { type: 'deleteEdge'; edgeId: string }
@@ -20,11 +21,16 @@ export type FlowchartOp =
   | { type: 'retargetEdge'; edgeId: string; end: 'source' | 'target'; nodeId: string }
   | { type: 'duplicateNode'; id: string }
 
+export interface EditorNotice {
+  key: string
+  params?: Record<string, string | number>
+}
+
 export interface OpResult {
   edits: TextEdit[]
   /** entity ids created by this op (e.g. the new node) */
   created?: string[]
-  warnings?: string[]
+  warnings?: EditorNotice[]
 }
 
 export interface FlowOpContext {
@@ -371,6 +377,14 @@ export function compileFlowchartOp(ctx: FlowOpContext, op: FlowchartOp): OpResul
   const { graph } = ctx
 
   switch (op.type) {
+    case 'addSubgraph': {
+      let n = 1
+      while (graph.nodeById.has(`group${n}`) || graph.subgraphs.some(group => group.id === `group${n}`)) n++
+      const id = `group${n}`, indent = bodyIndent(ctx)
+      return { edits: [insertLinesAfter(ctx, graph.lastContentLine, [
+        `${indent}subgraph ${id}[${printLabel(op.title, false)}]`, `${indent}end`,
+      ])], created: [`subgraph:${id}`] }
+    }
     case 'addNode': {
       const id = generateNodeId(graph, op.id)
       const shape = op.shape ?? 'rect'
@@ -469,7 +483,22 @@ export function compileFlowchartOp(ctx: FlowOpContext, op: FlowchartOp): OpResul
       if (!edge) return null
       const line = op.line ?? edge.seg.line
       const arrowEnd = op.arrowEnd ?? edge.seg.arrowEnd
-      const opStr = edgeOpString(line, arrowEnd)
+      const start = edge.seg.arrowStart === 'arrow' ? '<' : edge.seg.arrowStart === 'cross' ? 'x' : edge.seg.arrowStart === 'circle' ? 'o' : ''
+      const opStr = (op.preserveLabelForm ? start : '') + edgeOpString(line, arrowEnd)
+      const raw = slice(ctx, edge.seg.span)
+      const first = /^(?:[<xo])?(?:-{2,}|={2,}|-\.+-+|-\.+|~{3,})(?:[>xo])?/.exec(raw)!
+      if (op.preserveLabelForm && edge.seg.labelSpan && ctx.code[edge.seg.labelSpan.start - 1] !== '|' && line !== 'invisible') {
+        const last = /(?:\.+-+|-{2,}|={2,})(?:[>xo])?$/.exec(raw)!
+        const left = line === 'thick' ? '==' : line === 'dotted' ? '-.' : '--'
+        const right = line === 'dotted' ? edgeOpString(line, arrowEnd).slice(1) : edgeOpString(line, arrowEnd)
+        return { edits: [
+          { start: edge.seg.span.start, end: edge.seg.span.start + first[0].length, text: start + left },
+          { start: edge.seg.span.end - last[0].length, end: edge.seg.span.end, text: right },
+        ] }
+      }
+      if (op.preserveLabelForm && line !== 'invisible') {
+        return { edits: [{ start: edge.seg.span.start, end: edge.seg.span.start + first[0].length, text: opStr }] }
+      }
       const quoted = isQuotedLabel(edge.seg.label)
       const content = quoted ? edge.seg.label!.slice(1, -1) : edge.seg.label
       const label = content !== null ? `|${printEdgeLabel(content, quoted)}|` : ''
@@ -508,7 +537,7 @@ export function compileFlowchartOp(ctx: FlowOpContext, op: FlowchartOp): OpResul
     case 'deleteNode': {
       const node = nodeOf(graph, op.id)
       if (!node) return null
-      const warnings: string[] = []
+      const warnings: EditorNotice[] = []
       const changes: StatementChanges = new Map()
       const chainLines = new Set<number>()
       for (const r of node.refs) chainLines.add(r.lineIndex)
@@ -521,7 +550,7 @@ export function compileFlowchartOp(ctx: FlowOpContext, op: FlowchartOp): OpResul
       // Keep user-authored class/style/click statements; report dangling refs.
       for (const stmt of [...graph.statements.values()].flat()) {
         if ((stmt.kind === 'classAssign' || stmt.kind === 'style' || stmt.kind === 'click') && stmt.ids.includes(op.id)) {
-          warnings.push(`「${slice(ctx, stmt.span)}」第 ${stmt.lineIndex + 1} 行还引用着已删除的节点 ${op.id}，请手动处理`)
+          warnings.push({ key: 'toast.nodeHasStyle', params: { name: op.id, line: stmt.lineIndex + 1, text: slice(ctx, stmt.span) } })
         } else if (stmt.kind === 'edgeAttrs') {
           const associated = graph.edges.filter((edge) => edge.seg.edgeId === stmt.ids[0])
           if (associated.every((edge) => edge.source === op.id || edge.target === op.id)) changes.set(stmt, [])
@@ -534,6 +563,13 @@ export function compileFlowchartOp(ctx: FlowOpContext, op: FlowchartOp): OpResul
     case 'retargetEdge': {
       const edge = findEdge(graph, op.edgeId)
       if (!edge || !nodeOf(graph, op.nodeId) || edge[op.end] === op.nodeId) return null
+      const source = op.end === 'source' ? op.nodeId : edge.source
+      const target = op.end === 'target' ? op.nodeId : edge.target
+      if (graph.edges.some(other => other !== edge && other.lineIndex === edge.lineIndex &&
+        other.source === source && other.target === target && other.seg.line === edge.seg.line &&
+        other.seg.arrowStart === edge.seg.arrowStart && other.seg.arrowEnd === edge.seg.arrowEnd)) {
+        return { edits: [], warnings: [{ key: 'toast.dupEdge' }] }
+      }
       const stmt = graph.statements.get(edge.lineIndex)?.[edge.stmtIndex]
       if (!stmt || stmt.kind !== 'chain') return null
       const ref = op.end === 'source' ? edge.sourceRef : edge.targetRef
@@ -549,7 +585,7 @@ export function compileFlowchartOp(ctx: FlowOpContext, op: FlowchartOp): OpResul
       } else {
         const node = nodeOf(graph, ref.id)!
         const others = node.refs.filter((site) => site.ref !== ref)
-        const preserve = (ref.shape && !others.some((site) => site.ref.shape)) ||
+        const preserve = !others.length || (ref.shape && !others.some((site) => site.ref.shape)) ||
           (ref.attrsRaw && !others.some((site) => site.ref.attrsRaw === ref.attrsRaw)) ||
           ref.classNames.some((name) => !others.some((site) => site.ref.classNames.includes(name)))
         if (preserve) {

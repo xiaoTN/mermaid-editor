@@ -98,7 +98,7 @@ type EventMap = {
   change: ChangeEvent
   selectionChange: SelectionEvent
   diagnostics: Diagnostic[]
-  warning: string[]
+  warning: import('./flowchart/ops').EditorNotice[]
 }
 
 type Listener<T> = (payload: T) => void

@@ -62,6 +62,8 @@ export class Popover {
       btn.type = 'button'
       btn.className = 'mw-popover-btn' + (action.active ? ' active' : '') + (action.danger ? ' danger' : '')
       btn.title = action.title
+      btn.setAttribute('aria-label', action.title)
+      btn.setAttribute('aria-pressed', String(!!action.active))
       if (action.icon) btn.innerHTML = action.icon
       else {
         btn.classList.add('text')
@@ -134,6 +136,7 @@ export class Popover {
         b.type = 'button'
         b.className = 'mw-popover-cell' + (item.selected ? ' selected' : '') + (item.swatch ? ' swatch' : '')
         b.title = item.title
+        b.setAttribute('aria-label', item.title)
         if (item.swatch) {
           const dot = document.createElement('span')
           dot.className = 'mw-swatch-dot'
@@ -178,7 +181,7 @@ export const POPOVER_CSS = `
 }
 .mw-popover-btn {
   border: none; background: none; border-radius: 6px; cursor: pointer;
-  height: 28px; min-width: 28px; padding: 0 6px;
+  white-space: nowrap; flex-shrink: 0; height: 28px; min-width: 28px; padding: 0 6px;
   display: inline-flex; align-items: center; justify-content: center; gap: 3px;
   color: var(--mw-chrome-dim, #a1a1a1); line-height: 1;
   transition: background 0.12s, color 0.12s;

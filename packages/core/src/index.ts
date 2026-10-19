@@ -24,7 +24,7 @@ export {
   type FlowEdge,
   type FlowSubgraph,
 } from './flowchart/graph'
-export { compileFlowchartOp, type FlowchartOp, type OpResult } from './flowchart/ops'
+export { compileFlowchartOp, type FlowchartOp, type OpResult, type EditorNotice } from './flowchart/ops'
 export {
   parseSequenceStatement,
   PARTICIPANT_TYPES,

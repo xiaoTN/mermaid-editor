@@ -19,6 +19,32 @@ function history(editor: MermaidWysiwygEditor, before: string, after: string) {
 }
 
 describe('改边端点', () => {
+  it.each(['  B\n', '  X --> B\n', '  subgraph g\n    B\n  end\n'])('别处仍引用旧端点时不重复插入：%s', suffix => {
+    const code = 'flowchart LR\n  A --> B\n  C\n' + suffix
+    const editor = new MermaidWysiwygEditor({ code })
+    const result = retarget(editor, 'A', 'B', 'C')
+    expect(result.edits).toHaveLength(1)
+    history(editor, code, code.replace('A --> B', 'A --> C'))
+  })
+  it('同一行改出重复边时拒绝，返回提示 key 并发 warning，代码和历史不变', () => {
+    const code = 'flowchart LR\r\n\tA & B[乙] --> C  \r\n'
+    const editor = new MermaidWysiwygEditor({ code })
+    const warnings: unknown[] = []
+    editor.on('warning', messages => warnings.push(messages))
+    const result = retarget(editor, 'A', 'C', 'B', 'source')
+    expect(result.edits).toEqual([])
+    expect(result.warnings).toEqual([{ key: 'toast.dupEdge' }])
+    expect(warnings).toEqual([result.warnings])
+    expect(editor.code).toBe(code)
+    expect(editor.canUndo).toBe(false)
+  })
+  it('最后一次引用被拖走时，在原行上方保留隐式节点', () => {
+    const code = 'flowchart LR\r\n\tA -.-> D  \r\n\tO\r\n'
+    const editor = new MermaidWysiwygEditor({ code })
+    retarget(editor, 'A', 'D', 'O')
+    expect(editor.result.flowchart!.nodeById.has('D')).toBe(true)
+    history(editor, code, 'flowchart LR\r\n\tD\r\n\tA -.-> O  \r\n\tO\r\n')
+  })
   it('用例 1、21：在上方保留原节点定义，新端点不继承菱形和文字', () => {
     const code = sample('01-chinese-basic')
     const editor = new MermaidWysiwygEditor({ code })
@@ -45,8 +71,9 @@ describe('改边端点', () => {
     const code = sample('02-arrows')
     const editor = new MermaidWysiwygEditor({ code })
     const result = retarget(editor, 'A', target, 'B')
-    expect(result.edits).toHaveLength(1)
-    history(editor, code, code.replace(`A ${arrow} ${target}`, `A ${arrow} B`))
+    expect(result.edits).toHaveLength(2)
+    expect(editor.result.flowchart!.nodeById.has(target)).toBe(true)
+    history(editor, code, code.replace(`    A ${arrow} ${target}`, `    ${target}\n    A ${arrow} B`))
   })
 
   it.each(['A', 'B'])('用例 22、22b：只改 %s→C，边序和所有样式不变', (source) => {
@@ -89,14 +116,16 @@ describe('改边端点', () => {
     const editor = new MermaidWysiwygEditor({ code })
     retarget(editor, 'x1', 'x2', 'id_2')
     expect(editor.result.flowchart!.edges.find((edge) => edge.source === 'x1')?.seg.edgeId).toBe('e1')
-    history(editor, code, code.replace('x1 e1@--> x2', 'x1 e1@--> id_2'))
+    expect(editor.result.flowchart!.nodeById.has('x2')).toBe(true)
+    history(editor, code, code.replace('    x1 e1@--> x2', '    x2\n    x1 e1@--> id_2'))
   })
 
   it('用例 15：分号前后的语句、注释和空白不动', () => {
     const code = sample('06-edge-cases')
     const editor = new MermaidWysiwygEditor({ code })
     retarget(editor, 'D1', 'E1', 'B1')
-    history(editor, code, code.replace('C1 --> D1; D1 --> E1', 'C1 --> D1; D1 --> B1'))
+    expect(editor.result.flowchart!.nodeById.has('E1')).toBe(true)
+    history(editor, code, code.replace('    C1 --> D1; D1 --> E1', '    E1\n    C1 --> D1; D1 --> B1'))
   })
 
   it.each(['source', 'target'] as const)('CRLF 下把 %s 的完整定义（含属性、class）搬到上方', (end) => {
@@ -175,12 +204,12 @@ describe('删除节点只提示相关样式和交互声明', () => {
   it('class/style/click 全部字节不变，提示带原文及一基行号，并发出 warning 事件', () => {
     const code = sample('04-styles-comments')
     const editor = new MermaidWysiwygEditor({ code })
-    const warnings: string[][] = []
+    const warnings: unknown[] = []
     editor.on('warning', (messages) => warnings.push(messages))
     const result = editor.dispatch({ type: 'deleteNode', id: 'a4' })!
     expect(result.warnings).toEqual([
-      '「class a4,a5 cold」第 14 行还引用着已删除的节点 a4，请手动处理',
-      '「click a4 "https://example.com" "发货说明"」第 18 行还引用着已删除的节点 a4，请手动处理',
+      { key: 'toast.nodeHasStyle', params: { name: 'a4', line: 14, text: 'class a4,a5 cold' } },
+      { key: 'toast.nodeHasStyle', params: { name: 'a4', line: 18, text: 'click a4 "https://example.com" "发货说明"' } },
     ])
     expect(warnings).toEqual([result.warnings])
     expect(editor.result.flowchart!.nodeById.has('a4')).toBe(false)
@@ -192,7 +221,7 @@ describe('删除节点只提示相关样式和交互声明', () => {
     const editor = new MermaidWysiwygEditor({ code })
     const result = editor.dispatch({ type: 'deleteNode', id: 'B' })!
     expect(result.warnings).toHaveLength(3)
-    expect(result.warnings!.every((warning) => warning.includes('第 4 行'))).toBe(true)
+    expect(result.warnings!.every((warning) => warning.key === 'toast.nodeHasStyle' && warning.params?.line === 4)).toBe(true)
     history(editor, code, code.replace('\tA --> B\r\n', ''))
   })
 
