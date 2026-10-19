@@ -33,12 +33,25 @@ export interface FlowOpContext {
 
 // ---------- helpers ----------
 
-const NEEDS_QUOTE = /[[\]{}()|<>\\/&%#;]|^\s|\s$/
+const NEEDS_QUOTE = /[[\]{}()|<>"\\/&%#;]|^\s|\s$|\bend\b|--|==|-\.|~~~/
+
+function escapeLabel(label: string): string {
+  // Preserve existing Mermaid/HTML entities, including their literal `#`.
+  return label.replace(/"/g, '#quot;')
+}
 
 function printLabel(label: string, forceQuote: boolean): string {
-  const clean = label.replace(/"/g, "'")
-  if (forceQuote || NEEDS_QUOTE.test(clean)) return `"${clean}"`
-  return clean
+  const escaped = escapeLabel(label)
+  if (forceQuote || NEEDS_QUOTE.test(label)) return `"${escaped}"`
+  return escaped
+}
+
+function isQuotedLabel(label: string | null): boolean {
+  return label !== null && label.length >= 2 && label.startsWith('"') && label.endsWith('"')
+}
+
+function printEdgeLabel(label: string, forceQuote = false): string {
+  return printLabel(label.replace(/\|/g, '#124;'), forceQuote)
 }
 
 function edgeOpString(line: EdgeLine, arrowEnd: EdgeArrow): string {
@@ -319,7 +332,7 @@ export function compileFlowchartOp(ctx: FlowOpContext, op: FlowchartOp): OpResul
       const tgt = nodeOf(graph, op.target)
       if (!src || !tgt) return null
       const opStr = edgeOpString(op.line ?? 'solid', op.arrowEnd ?? 'arrow')
-      const label = op.label ? `|${op.label.replace(/\|/g, '')}|` : ''
+      const label = op.label ? `|${printEdgeLabel(op.label)}|` : ''
       const after = lastRefLine(graph, [op.source, op.target])
       const indent = ctx.lines[after].kind === 'statement' ? ctx.lines[after].indent : bodyIndent(ctx)
       const text = `${indent}${op.source} ${opStr}${label} ${op.target}`
@@ -343,7 +356,7 @@ export function compileFlowchartOp(ctx: FlowOpContext, op: FlowchartOp): OpResul
         const span = ref.labelSpan!
         if (ref.quoted) {
           const label = ref.markdown ? op.label.replace(/\r?\n/g, eolOf(ctx)) : op.label
-          return { edits: [{ start: span.start, end: span.end, text: label.replace(/"/g, "'") }] }
+          return { edits: [{ start: span.start, end: span.end, text: escapeLabel(label) }] }
         }
         return { edits: [{ start: span.start, end: span.end, text: printLabel(op.label, false) }] }
       }
@@ -382,17 +395,17 @@ export function compileFlowchartOp(ctx: FlowOpContext, op: FlowchartOp): OpResul
     case 'setEdgeLabel': {
       const edge = findEdge(graph, op.edgeId)
       if (!edge) return null
-      const label = op.label.replace(/\|/g, '')
+      const label = op.label
       if (edge.seg.labelSpan) {
         if (label === '') {
           // remove the label entirely by rewriting the operator
           const opStr = edgeOpString(edge.seg.line, edge.seg.arrowEnd)
           return { edits: [{ start: edge.seg.span.start, end: edge.seg.span.end, text: opStr }] }
         }
-        return { edits: [{ start: edge.seg.labelSpan.start, end: edge.seg.labelSpan.end, text: label }] }
+        return { edits: [{ start: edge.seg.labelSpan.start, end: edge.seg.labelSpan.end, text: printEdgeLabel(label, isQuotedLabel(edge.seg.label)) }] }
       }
       if (label === '') return { edits: [] }
-      return { edits: [{ start: edge.seg.span.end, end: edge.seg.span.end, text: `|${label}|` }] }
+      return { edits: [{ start: edge.seg.span.end, end: edge.seg.span.end, text: `|${printEdgeLabel(label)}|` }] }
     }
 
     case 'setEdgeStyle': {
@@ -401,7 +414,9 @@ export function compileFlowchartOp(ctx: FlowOpContext, op: FlowchartOp): OpResul
       const line = op.line ?? edge.seg.line
       const arrowEnd = op.arrowEnd ?? edge.seg.arrowEnd
       const opStr = edgeOpString(line, arrowEnd)
-      const label = edge.seg.label !== null ? `|${edge.seg.label.replace(/\|/g, '')}|` : ''
+      const quoted = isQuotedLabel(edge.seg.label)
+      const content = quoted ? edge.seg.label!.slice(1, -1) : edge.seg.label
+      const label = content !== null ? `|${printEdgeLabel(content, quoted)}|` : ''
       return { edits: [{ start: edge.seg.span.start, end: edge.seg.span.end, text: `${opStr}${label}` }] }
     }
 
