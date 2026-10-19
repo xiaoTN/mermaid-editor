@@ -1,0 +1,18 @@
+%% 顶部注释：别删我
+%%{init: {"theme": "forest"}}%%
+flowchart TB
+    %% 节点定义
+    a1[订单创建]:::hot --> a2(支付)
+    a2 --> a3{支付成功?}
+    a3 -- yes --> a4[发货]
+    a3 -- no --> a5[取消]
+	%% 下面这行用 tab 缩进
+	a5 --> a1
+
+    classDef hot fill:#f96,stroke:#333,stroke-width:2px;
+    classDef cold fill:#9cf
+    class a4,a5 cold
+    style a2 fill:#bbf,stroke:#f66,stroke-width:2px,color:#fff,stroke-dasharray: 5 5
+    linkStyle 0 stroke:#ff3,stroke-width:4px
+    linkStyle default color:red
+    click a4 "https://example.com" "发货说明"

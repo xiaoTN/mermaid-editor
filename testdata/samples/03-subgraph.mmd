@@ -1,0 +1,16 @@
+flowchart LR
+    subgraph 前端["前端 (Web)"]
+        direction TB
+        UI[页面] --> Store[(状态)]
+    end
+    subgraph 后端
+        API[API 网关] --> SVC[服务]
+        subgraph 存储
+            DB[(MySQL)]
+            Cache[(Redis)]
+        end
+        SVC --> DB
+        SVC -.-> Cache
+    end
+    Store -->|HTTP| API
+    前端 --> 后端

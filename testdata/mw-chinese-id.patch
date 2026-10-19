@@ -1,0 +1,44 @@
+diff --git a/packages/core/src/flowchart/parse.ts b/packages/core/src/flowchart/parse.ts
+index 39c18fd..e17c483 100644
+--- a/packages/core/src/flowchart/parse.ts
++++ b/packages/core/src/flowchart/parse.ts
+@@ -129,7 +129,7 @@ export interface SimpleStmt {
+ 
+ export type FlowStmt = ChainStmt | SubgraphOpenStmt | SimpleStmt
+ 
+-const ID_CHAR = /[A-Za-z0-9_.]/
++const ID_CHAR = /[\p{L}\p{N}_.]/u
+ const DIRECTIONS = ['TB', 'TD', 'BT', 'RL', 'LR']
+ 
+ class LineParser {
+@@ -166,7 +166,7 @@ class LineParser {
+   parseNodeRef(): NodeRef | null {
+     const start = this.pos
+     const idStart = this.pos
+-    while (this.pos < this.end && ID_CHAR.test(this.text[this.pos])) this.pos++
++    while (this.pos < this.end && (ID_CHAR.test(this.text[this.pos]) || (this.text[this.pos] === '-' && this.pos > 0 && ID_CHAR.test(this.text[this.pos-1]) && ID_CHAR.test(this.text[this.pos+1] ?? '')))) this.pos++
+     if (this.pos === idStart) return null
+     const id = this.text.slice(idStart, this.pos)
+     const idSpan: Span = { start: this.abs(idStart), end: this.abs(this.pos) }
+@@ -382,7 +382,7 @@ export function parseFlowStatement(line: LineInfo): FlowStmt {
+   if (/^classDef\b/.test(t)) return { kind: 'classDef', lineIndex, ids: [], idsSpan: null }
+   if (/^linkStyle\b/.test(t)) return { kind: 'linkStyle', lineIndex, ids: [], idsSpan: null }
+ 
+-  const classM = /^class\s+([A-Za-z0-9_.,\s]+?)\s+([A-Za-z0-9_-]+)\s*;?\s*$/.exec(t)
++  const classM = /^class\s+([\p{L}\p{N}_.,\s-]+?)\s+([\p{L}\p{N}_-]+)\s*;?\s*$/u.exec(t)
+   if (classM) {
+     const ids = classM[1].split(',').map((s) => s.trim()).filter(Boolean)
+     const listStart = line.text.indexOf(classM[1])
+@@ -394,10 +394,10 @@ export function parseFlowStatement(line: LineInfo): FlowStmt {
+     }
+   }
+ 
+-  const styleM = /^style\s+([A-Za-z0-9_.]+)\b/.exec(t)
++  const styleM = /^style\s+([\p{L}\p{N}_.-]+)/u.exec(t)
+   if (styleM) return { kind: 'style', lineIndex, ids: [styleM[1]], idsSpan: null }
+ 
+-  const clickM = /^click\s+([A-Za-z0-9_.]+)\b/.exec(t)
++  const clickM = /^click\s+([\p{L}\p{N}_.-]+)/u.exec(t)
+   if (clickM) return { kind: 'click', lineIndex, ids: [clickM[1]], idsSpan: null }
+ 
+   // chain (nodes and edges)

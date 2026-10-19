@@ -1,0 +1,8 @@
+flowchart LR
+    %% 边序号：0 A→C，1 B→C，2 C→D，3 D→E，4 E→F
+    A[甲] & B[乙] --> C{判断}
+    C --> D(丁) --> E[(戊)]
+    E -.-> F
+    linkStyle 0 stroke:red
+    linkStyle 1,3 stroke:green
+    linkStyle 4 stroke:blue,stroke-width:3px
