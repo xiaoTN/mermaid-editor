@@ -4,6 +4,7 @@ export { DIAGRAM_TYPES, detectDiagramType } from './registry'
 export { scanLines, classifyLines, applyEdits, diffText, mapOffset } from './text'
 export {
   parseFlowStatement,
+  splitStatements,
   parseFlowHeader,
   SHAPE_DELIMS,
   type ShapeId,

@@ -60,13 +60,13 @@ describe('中文 ID 与最小文本改动', () => {
   it('class/style/click 能识别中文及连字符 ID，span 指回原文', () => {
     const code = 'flowchart LR\n  节点-1 --> 节点_2\n  class 节点-1,节点_2 高亮\n  style 节点-1 fill:red\n  click 节点_2 "https://example.com"\n'
     const graph = parse(code).flowchart!
-    const assignment = graph.statements.get(2)!
+    const assignment = graph.statements.get(2)![0]
     expect(assignment.kind).toBe('classAssign')
     if (assignment.kind !== 'classAssign') throw new Error('未识别中文 class 语句')
     expect(assignment.ids).toEqual(['节点-1', '节点_2'])
     expect(code.slice(assignment.idsSpan!.start, assignment.idsSpan!.end)).toBe('节点-1,节点_2')
-    expect(graph.statements.get(3)).toMatchObject({ kind: 'style', ids: ['节点-1'] })
-    expect(graph.statements.get(4)).toMatchObject({ kind: 'click', ids: ['节点_2'] })
+    expect(graph.statements.get(3)?.[0]).toMatchObject({ kind: 'style', ids: ['节点-1'] })
+    expect(graph.statements.get(4)?.[0]).toMatchObject({ kind: 'click', ids: ['节点_2'] })
   })
 
   it('中文改名保留 CRLF、tab、注释、行尾空格和末尾无换行', () => {

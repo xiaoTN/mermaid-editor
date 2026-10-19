@@ -34,6 +34,7 @@ export type LineKind =
   | 'frontmatter'
   | 'header'
   | 'statement'
+  | 'continuation'
 
 export interface LineInfo {
   index: number

@@ -83,6 +83,8 @@ export interface NodeRef {
   /** span of the label text (inside quotes if quoted) */
   labelSpan: Span | null
   quoted: boolean
+  /** Mermaid Markdown string: the label span excludes both backticks. */
+  markdown: boolean
   /** raw @{...} attribute blob, if present */
   attrsRaw: string | null
   classNames: string[]
@@ -92,6 +94,9 @@ export type EdgeLine = 'solid' | 'thick' | 'dotted' | 'invisible'
 export type EdgeArrow = 'arrow' | 'open' | 'circle' | 'cross'
 
 export interface EdgeSeg {
+  edgeId: string | null
+  /** Includes the id and `@`, but not the operator. */
+  idSpan: Span | null
   /** span covering operator plus any label form, absolute offsets */
   span: Span
   raw: string
@@ -102,25 +107,29 @@ export interface EdgeSeg {
   labelSpan: Span | null
 }
 
-export interface ChainStmt {
-  kind: 'chain'
+interface StmtSite {
   lineIndex: number
+  stmtIndex: number
+  /** Trimmed logical statement, excluding its semicolon. May cross physical lines. */
+  span: Span
+}
+
+export interface ChainStmt extends StmtSite {
+  kind: 'chain'
   /** groups of `&`-joined node refs; edges[i] connects groups[i] → groups[i+1] */
   groups: NodeRef[][]
   edges: EdgeSeg[]
 }
 
-export interface SubgraphOpenStmt {
+export interface SubgraphOpenStmt extends StmtSite {
   kind: 'subgraphOpen'
-  lineIndex: number
   id: string
   title: string | null
   titleSpan: Span | null
 }
 
-export interface SimpleStmt {
-  kind: 'end' | 'direction' | 'classDef' | 'classAssign' | 'style' | 'linkStyle' | 'click' | 'unknown'
-  lineIndex: number
+export interface SimpleStmt extends StmtSite {
+  kind: 'end' | 'direction' | 'classDef' | 'classAssign' | 'style' | 'linkStyle' | 'click' | 'edgeAttrs' | 'unknown'
   /** for 'classAssign': node id list; for 'style'/'click': [targetId]; for 'direction': [dir] */
   ids: string[]
   /** span of the id-list portion (classAssign) or full trimmed statement */
@@ -131,6 +140,68 @@ export type FlowStmt = ChainStmt | SubgraphOpenStmt | SimpleStmt
 
 const ID_CHAR = /[\p{L}\p{N}_.]/u
 const DIRECTIONS = ['TB', 'TD', 'BT', 'RL', 'LR']
+
+/** Scan syntax boundaries without changing any source bytes. */
+function statementBoundaries(line: LineInfo): { spans: Span[]; markdownOpen: boolean } {
+  const spans: Span[] = []
+  const closes: string[] = []
+  let quote = false
+  let markdown = false
+  let pipe = false
+  let start = 0
+  const append = (end: number) => {
+    let s = start
+    while (s < end && /\s/.test(line.text[s])) s++
+    while (end > s && /\s/.test(line.text[end - 1])) end--
+    if (s < end) spans.push({ start: line.start + s, end: line.start + end })
+  }
+  for (let i = 0; i < line.text.length; i++) {
+    const c = line.text[i]
+    if (markdown) {
+      if (line.text.startsWith('`"', i)) {
+        markdown = false
+        i++
+      }
+      continue
+    }
+    if (quote) {
+      if (c === '"') quote = false
+      continue
+    }
+    if (c === '"') {
+      if (line.text[i + 1] === '`') {
+        markdown = true
+        i++
+      } else quote = true
+      continue
+    }
+    if (!closes.length && line.text.startsWith('%%', i) && !pipe) {
+      append(i)
+      return { spans, markdownOpen: false }
+    }
+    if (c === '|' && !closes.length) pipe = !pipe
+    if (pipe) continue
+    if (c === '[') closes.push(']')
+    else if (c === '(') closes.push(')')
+    else if (c === '{') closes.push('}')
+    else if (c === '>' && !closes.length && ID_CHAR.test(line.text[i - 1] ?? '')) closes.push(']')
+    else if (c === closes[closes.length - 1]) closes.pop()
+    else if (c === ';' && !closes.length) {
+      append(i)
+      start = i + 1
+    }
+  }
+  append(line.text.length)
+  return { spans, markdownOpen: markdown }
+}
+
+export function splitStatements(line: LineInfo): Span[] {
+  return statementBoundaries(line).spans
+}
+
+export function hasUnclosedMarkdown(line: LineInfo): boolean {
+  return statementBoundaries(line).markdownOpen
+}
 
 class LineParser {
   text: string
@@ -175,6 +246,7 @@ class LineParser {
     let label: string | null = null
     let labelSpan: Span | null = null
     let quoted = false
+    let markdown = false
 
     for (const def of SHAPE_OPENS) {
       if (this.text.startsWith(def.open, this.pos)) {
@@ -184,11 +256,12 @@ class LineParser {
         let labelEnd: number
         let afterLabel: number
         if (this.text[openEnd] === '"') {
-          const q = this.text.indexOf('"', openEnd + 1)
+          markdown = this.text[openEnd + 1] === '`'
+          const q = this.text.indexOf(markdown ? '`"' : '"', openEnd + (markdown ? 2 : 1))
           if (q === -1 || q >= this.end) return null
-          labelStart = openEnd + 1
+          labelStart = openEnd + (markdown ? 2 : 1)
           labelEnd = q
-          afterLabel = q + 1
+          afterLabel = q + (markdown ? 2 : 1)
           quoted = true
           for (const c of def.close) {
             if (this.text.startsWith(c, afterLabel)) {
@@ -246,6 +319,7 @@ class LineParser {
       label,
       labelSpan,
       quoted,
+      markdown,
       attrsRaw,
       classNames,
     }
@@ -332,6 +406,8 @@ class LineParser {
       d === '>' ? 'arrow' : d === 'x' ? 'cross' : d === 'o' ? 'circle' : 'open'
 
     return {
+      edgeId: null,
+      idSpan: null,
       span: { start: this.abs(start), end: this.abs(this.pos) },
       raw,
       line,
@@ -343,14 +419,24 @@ class LineParser {
   }
 }
 
-export function parseFlowStatement(line: LineInfo): FlowStmt {
+export function parseFlowStatement(line: LineInfo): FlowStmt[] {
+  return splitStatements(line).map((span, stmtIndex) => parseStatement({
+    ...line,
+    text: line.text.slice(span.start - line.start, span.end - line.start),
+    start: span.start,
+    end: span.end,
+  }, stmtIndex, span))
+}
+
+function parseStatement(line: LineInfo, stmtIndex: number, span: Span): FlowStmt {
   const t = line.text.trim()
   const lineIndex = line.index
+  const site = { lineIndex, stmtIndex, span }
 
-  if (t === 'end') return { kind: 'end', lineIndex, ids: [], idsSpan: null }
+  if (t === 'end') return { kind: 'end', ...site, ids: [], idsSpan: null }
 
   const dirM = /^direction\s+(TB|TD|BT|RL|LR)\s*;?\s*$/.exec(t)
-  if (dirM) return { kind: 'direction', lineIndex, ids: [dirM[1]], idsSpan: null }
+  if (dirM) return { kind: 'direction', ...site, ids: [dirM[1]], idsSpan: null }
 
   const sgM = /^subgraph\s+(.*)$/.exec(t)
   if (sgM) {
@@ -376,11 +462,11 @@ export function parseFlowStatement(line: LineInfo): FlowStmt {
         titleSpan = { start: line.start + s, end: line.start + e }
       }
     }
-    return { kind: 'subgraphOpen', lineIndex, id, title, titleSpan }
+    return { kind: 'subgraphOpen', ...site, id, title, titleSpan }
   }
 
-  if (/^classDef\b/.test(t)) return { kind: 'classDef', lineIndex, ids: [], idsSpan: null }
-  if (/^linkStyle\b/.test(t)) return { kind: 'linkStyle', lineIndex, ids: [], idsSpan: null }
+  if (/^classDef\b/.test(t)) return { kind: 'classDef', ...site, ids: [], idsSpan: null }
+  if (/^linkStyle\b/.test(t)) return { kind: 'linkStyle', ...site, ids: [], idsSpan: null }
 
   const classM = /^class\s+([\p{L}\p{N}_.,\s-]+?)\s+([\p{L}\p{N}_-]+)\s*;?\s*$/u.exec(t)
   if (classM) {
@@ -388,17 +474,17 @@ export function parseFlowStatement(line: LineInfo): FlowStmt {
     const listStart = line.text.indexOf(classM[1])
     return {
       kind: 'classAssign',
-      lineIndex,
+      ...site,
       ids,
       idsSpan: { start: line.start + listStart, end: line.start + listStart + classM[1].length },
     }
   }
 
   const styleM = /^style\s+([\p{L}\p{N}_.-]+)/u.exec(t)
-  if (styleM) return { kind: 'style', lineIndex, ids: [styleM[1]], idsSpan: null }
+  if (styleM) return { kind: 'style', ...site, ids: [styleM[1]], idsSpan: null }
 
   const clickM = /^click\s+([\p{L}\p{N}_.-]+)/u.exec(t)
-  if (clickM) return { kind: 'click', lineIndex, ids: [clickM[1]], idsSpan: null }
+  if (clickM) return { kind: 'click', ...site, ids: [clickM[1]], idsSpan: null }
 
   // chain (nodes and edges)
   const p = new LineParser(line)
@@ -411,10 +497,17 @@ export function parseFlowStatement(line: LineInfo): FlowStmt {
     while (true) {
       p.skipWs()
       if (p.atEnd()) break
+      const idMatch = /^([\p{L}\p{N}_]+)@(?=[-=.~<xo])/u.exec(p.text.slice(p.pos, p.end))
+      const idStart = p.pos
+      if (idMatch) p.pos += idMatch[0].length
       const edge = p.parseEdge()
       if (!edge) {
         ok = false
         break
+      }
+      if (idMatch) {
+        edge.edgeId = idMatch[1]
+        edge.idSpan = { start: p.abs(idStart), end: p.abs(idStart + idMatch[0].length) }
       }
       p.skipWs()
       const g = p.parseGroup()
@@ -425,10 +518,10 @@ export function parseFlowStatement(line: LineInfo): FlowStmt {
       edges.push(edge)
       groups.push(g)
     }
-    if (ok) return { kind: 'chain', lineIndex, groups, edges }
+    if (ok) return { kind: 'chain', ...site, groups, edges }
   }
 
-  return { kind: 'unknown', lineIndex, ids: [], idsSpan: null }
+  return { kind: 'unknown', ...site, ids: [], idsSpan: null }
 }
 
 /** Parse the flowchart header, returning direction info. */

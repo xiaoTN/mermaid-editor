@@ -1,6 +1,7 @@
-import type { LineInfo, TextEdit } from '../types'
+import type { LineInfo, Span, TextEdit } from '../types'
+import { diffText } from '../text'
 import type { FlowGraph, FlowEdge, FlowNode } from './graph'
-import { SHAPE_DELIMS, type ChainStmt, type EdgeArrow, type EdgeLine, type NodeRef, type ShapeId } from './parse'
+import { SHAPE_DELIMS, type ChainStmt, type EdgeArrow, type EdgeLine, type FlowStmt, type NodeRef, type ShapeId } from './parse'
 
 export type FlowchartOp =
   | { type: 'addNode'; shape?: ShapeId; label?: string; id?: string }
@@ -63,22 +64,90 @@ function bodyIndent(ctx: FlowOpContext): string {
   return '  '
 }
 
+function eolOf(ctx: FlowOpContext): string {
+  return ctx.code.includes('\r\n') ? '\r\n' : '\n'
+}
+
+function lineBody(line: LineInfo): Span {
+  return { start: line.start, end: line.end - (line.text.endsWith('\r') ? 1 : 0) }
+}
+
+function logicalEndLine(ctx: FlowOpContext, lineIndex: number): number {
+  while (ctx.lines[lineIndex + 1]?.kind === 'continuation') lineIndex++
+  return lineIndex
+}
+
+export function insertLinesBefore(ctx: FlowOpContext, lineIndex: number, texts: string[]): TextEdit {
+  const start = ctx.lines[lineIndex].start
+  const eol = eolOf(ctx)
+  return { start, end: start, text: texts.map((text) => text + eol).join('') }
+}
+
 function insertLinesAfter(ctx: FlowOpContext, lineIndex: number, texts: string[]): TextEdit {
-  const line = ctx.lines[lineIndex]
-  return { start: line.end, end: line.end, text: texts.map((t) => `\n${t}`).join('') }
+  const line = ctx.lines[logicalEndLine(ctx, lineIndex)]
+  const at = lineBody(line).end
+  return { start: at, end: at, text: texts.map((t) => `${eolOf(ctx)}${t}`).join('') }
 }
 
 function deleteLineEdit(ctx: FlowOpContext, lineIndex: number): TextEdit {
   const line = ctx.lines[lineIndex]
-  if (line.end < ctx.code.length) return { start: line.start, end: line.end + 1, text: '' }
-  if (line.start > 0) return { start: line.start - 1, end: line.end, text: '' }
-  return { start: line.start, end: line.end, text: '' }
+  const last = ctx.lines[logicalEndLine(ctx, lineIndex)]
+  if (last.end < ctx.code.length) return { start: line.start, end: last.end + 1, text: '' }
+  if (line.start > 0) {
+    const eolLength = ctx.code.slice(line.start - 2, line.start) === '\r\n' ? 2 : 1
+    return { start: line.start - eolLength, end: last.end, text: '' }
+  }
+  return { start: line.start, end: last.end, text: '' }
 }
 
-function replaceLineEdit(ctx: FlowOpContext, lineIndex: number, texts: string[]): TextEdit {
-  if (texts.length === 0) return deleteLineEdit(ctx, lineIndex)
-  const line = ctx.lines[lineIndex]
-  return { start: line.start, end: line.end, text: texts.join('\n') }
+type StatementChanges = Map<FlowStmt, string[]>
+
+/** Replace statement spans; remove adjacent separators only when a statement disappears. */
+function statementEdits(ctx: FlowOpContext, changes: StatementChanges): TextEdit[] {
+  const edits: TextEdit[] = []
+  for (const lineIndex of new Set([...changes.keys()].map((stmt) => stmt.lineIndex))) {
+    const stmts = ctx.graph.statements.get(lineIndex)!
+    const removed = (stmt: FlowStmt) => changes.get(stmt)?.length === 0
+    if (stmts.every(removed)) {
+      const last = ctx.lines[logicalEndLine(ctx, lineIndex)]
+      const suffix = ctx.code.slice(stmts[stmts.length - 1].span.end, lineBody(last).end)
+      if (!suffix.trimStart().startsWith('%%')) {
+        edits.push(deleteLineEdit(ctx, lineIndex))
+        continue
+      }
+    }
+    for (let i = 0; i < stmts.length; i++) {
+      const stmt = stmts[i]
+      if (removed(stmt)) {
+        let endIndex = i
+        while (endIndex + 1 < stmts.length && removed(stmts[endIndex + 1])) endIndex++
+        edits.push({
+          start: endIndex + 1 < stmts.length || i === 0 ? stmt.span.start : stmts[i - 1].span.end,
+          end: endIndex + 1 < stmts.length ? stmts[endIndex + 1].span.start : stmts[endIndex].span.end,
+          text: '',
+        })
+        i = endIndex
+      } else if (changes.has(stmt)) {
+        const text = changes.get(stmt)!.join(eolOf(ctx) + ctx.lines[lineIndex].indent)
+        const diff = diffText(slice(ctx, stmt.span), text)
+        if (diff) edits.push({ start: stmt.span.start + diff.start, end: stmt.span.start + diff.end, text: diff.text })
+      }
+    }
+  }
+  // Adjacent deleted physical lines at EOF can share the preceding newline.
+  const sorted = edits.sort((a, b) => a.start - b.start)
+  const merged: TextEdit[] = []
+  for (const edit of sorted) {
+    const previous = merged[merged.length - 1]
+    if (previous && previous.text === '' && edit.text === '' && edit.start <= previous.end) {
+      previous.end = Math.max(previous.end, edit.end)
+    } else merged.push(edit)
+  }
+  const last = merged[merged.length - 1]
+  if (last?.text === '' && last.end === ctx.code.length && !ctx.code.endsWith('\n') && ctx.code[last.start - 1] === '\n') {
+    last.start -= ctx.code[last.start - 2] === '\r' ? 2 : 1
+  }
+  return merged
 }
 
 function slice(ctx: FlowOpContext, span: { start: number; end: number }): string {
@@ -122,9 +191,6 @@ function rebuildChain(
   chain: ChainStmt,
   opts: { dropNodeId?: string; dropEdge?: { segIndex: number; source: string; target: string } },
 ): string[] {
-  const line = ctx.lines[lineIndex]
-  const indent = line.indent
-
   interface Expanded {
     a: NodeRef
     b: NodeRef
@@ -152,7 +218,7 @@ function rebuildChain(
     return true
   })
 
-  if (kept.length === expanded.length && !opts.dropNodeId) return [line.text]
+  if (kept.length === expanded.length && !opts.dropNodeId) return [slice(ctx, chain.span)]
 
   const survivors = new Set<NodeRef>()
   for (const e of kept) {
@@ -165,16 +231,21 @@ function rebuildChain(
   let current = ''
   let lastB: NodeRef | null = null
   for (const e of kept) {
-    const segText = slice(ctx, chain.edges[e.segIndex].span)
+    const seg = chain.edges[e.segIndex]
+    const segStart = seg.idSpan?.start ?? seg.span.start
+    const segText = slice(ctx, { start: segStart, end: seg.span.end })
+    const sourceGroup = chain.groups[e.segIndex]
+    const before = slice(ctx, { start: sourceGroup[sourceGroup.length - 1].span.end, end: segStart })
+    const after = slice(ctx, { start: seg.span.end, end: chain.groups[e.segIndex + 1][0].span.start })
     if (lastB === e.a && current) {
-      current += ` ${segText} ${slice(ctx, e.b.span)}`
+      current += `${before}${segText}${after}${slice(ctx, e.b.span)}`
     } else {
-      if (current) out.push(indent + current)
-      current = `${slice(ctx, e.a.span)} ${segText} ${slice(ctx, e.b.span)}`
+      if (current) out.push(current)
+      current = `${slice(ctx, e.a.span)}${before}${segText}${after}${slice(ctx, e.b.span)}`
     }
     lastB = e.b
   }
-  if (current) out.push(indent + current)
+  if (current) out.push(current)
 
   // preserve standalone declarations for refs that lost all their edges on this
   // line but carry information (a shape/label) or are defined nowhere else
@@ -185,11 +256,11 @@ function rebuildChain(
       const node = ctx.graph.nodeById.get(ref.id)
       if (!node) continue
       const shapedElsewhere = node.refs.some((r) => r.ref !== ref && r.ref.shape)
-      const referencedElsewhere = node.refs.some((r) => r.lineIndex !== lineIndex || (r.ref !== ref && survivors.has(r.ref)))
+      const referencedElsewhere = node.refs.some((r) => r.lineIndex !== lineIndex || r.stmtIndex !== chain.stmtIndex || (r.ref !== ref && survivors.has(r.ref)))
       if (ref.shape && !shapedElsewhere) {
-        out.push(indent + slice(ctx, ref.span))
+        out.push(slice(ctx, ref.span))
       } else if (!referencedElsewhere && !ref.shape) {
-        out.push(indent + slice(ctx, ref.span))
+        out.push(slice(ctx, ref.span))
       }
     }
   }
@@ -206,23 +277,21 @@ function findEdge(graph: FlowGraph, edgeId: string): FlowEdge | null {
  * change edge order must renumber (or drop) the affected statements.
  * `map` returns the new index for an old one, or null to delete the line.
  */
-function renumberLinkStyles(ctx: FlowOpContext, map: (index: number) => number | null): TextEdit[] {
-  const edits: TextEdit[] = []
-  for (const [lineIndex, stmt] of ctx.graph.statements) {
+function renumberLinkStyles(ctx: FlowOpContext, map: (index: number) => number | null, changes: StatementChanges = new Map()): StatementChanges {
+  for (const stmt of [...ctx.graph.statements.values()].flat()) {
     if (stmt.kind !== 'linkStyle') continue
-    const line = ctx.lines[lineIndex]
-    const m = /^(\s*linkStyle\s+)(\d+)\b/.exec(line.text)
+    const raw = slice(ctx, stmt.span)
+    const m = /^(linkStyle\s+)(\d+)\b/.exec(raw)
     if (!m) continue
     const oldIndex = Number(m[2])
     const newIndex = map(oldIndex)
     if (newIndex === null) {
-      edits.push(deleteLineEdit(ctx, lineIndex))
+      changes.set(stmt, [])
     } else if (newIndex !== oldIndex) {
-      const numStart = line.start + m[1].length
-      edits.push({ start: numStart, end: numStart + m[2].length, text: String(newIndex) })
+      changes.set(stmt, [raw.slice(0, m[1].length) + newIndex + raw.slice(m[1].length + m[2].length)])
     }
   }
-  return edits
+  return changes
 }
 
 function nodeOf(graph: FlowGraph, id: string): FlowNode | null {
@@ -260,7 +329,7 @@ export function compileFlowchartOp(ctx: FlowOpContext, op: FlowchartOp): OpResul
       return {
         edits: [
           insertLinesAfter(ctx, after, [text]),
-          ...renumberLinkStyles(ctx, (i) => (i >= newOrder ? i + 1 : i)),
+          ...statementEdits(ctx, renumberLinkStyles(ctx, (i) => (i >= newOrder ? i + 1 : i))),
         ],
         created: [`edge:${op.source}->${op.target}#${occ}`],
       }
@@ -273,7 +342,8 @@ export function compileFlowchartOp(ctx: FlowOpContext, op: FlowchartOp): OpResul
         const ref = node.primary.ref
         const span = ref.labelSpan!
         if (ref.quoted) {
-          return { edits: [{ start: span.start, end: span.end, text: op.label.replace(/"/g, "'") }] }
+          const label = ref.markdown ? op.label.replace(/\r?\n/g, eolOf(ctx)) : op.label
+          return { edits: [{ start: span.start, end: span.end, text: label.replace(/"/g, "'") }] }
         }
         return { edits: [{ start: span.start, end: span.end, text: printLabel(op.label, false) }] }
       }
@@ -291,7 +361,7 @@ export function compileFlowchartOp(ctx: FlowOpContext, op: FlowchartOp): OpResul
       if (node.primary && node.primary.ref.labelSpan) {
         const ref = node.primary.ref
         const oldDelims = SHAPE_DELIMS[ref.shape!]
-        const q = ref.quoted ? 1 : 0
+        const q = ref.markdown ? 2 : ref.quoted ? 1 : 0
         const openStart = ref.idSpan.end
         const openEnd = ref.labelSpan!.start - q
         const closeStart = ref.labelSpan!.end + q
@@ -347,17 +417,21 @@ export function compileFlowchartOp(ctx: FlowOpContext, op: FlowchartOp): OpResul
     case 'deleteEdge': {
       const edge = findEdge(graph, op.edgeId)
       if (!edge) return null
-      const stmt = graph.statements.get(edge.lineIndex)
+      const stmt = graph.statements.get(edge.lineIndex)?.[edge.stmtIndex]
       if (!stmt || stmt.kind !== 'chain') return null
       const texts = rebuildChain(ctx, edge.lineIndex, stmt, {
         dropEdge: { segIndex: edge.segIndex, source: edge.source, target: edge.target },
       })
       const removed = edge.order
+      const changes: StatementChanges = new Map([[stmt, texts]])
+      const id = edge.seg.edgeId
+      if (id && !graph.edges.some((other) => other !== edge && other.seg.edgeId === id)) {
+        for (const attr of [...graph.statements.values()].flat()) {
+          if (attr.kind === 'edgeAttrs' && attr.ids[0] === id) changes.set(attr, [])
+        }
+      }
       return {
-        edits: [
-          replaceLineEdit(ctx, edge.lineIndex, texts),
-          ...renumberLinkStyles(ctx, (i) => (i === removed ? null : i > removed ? i - 1 : i)),
-        ],
+        edits: statementEdits(ctx, renumberLinkStyles(ctx, (i) => (i === removed ? null : i > removed ? i - 1 : i), changes)),
       }
     }
 
@@ -365,22 +439,26 @@ export function compileFlowchartOp(ctx: FlowOpContext, op: FlowchartOp): OpResul
       const node = nodeOf(graph, op.id)
       if (!node) return null
       const edits: TextEdit[] = []
+      const changes: StatementChanges = new Map()
       const chainLines = new Set<number>()
       for (const r of node.refs) chainLines.add(r.lineIndex)
       for (const lineIndex of chainLines) {
-        const stmt = graph.statements.get(lineIndex)
-        if (!stmt || stmt.kind !== 'chain') continue
-        const texts = rebuildChain(ctx, lineIndex, stmt, { dropNodeId: op.id })
-        edits.push(replaceLineEdit(ctx, lineIndex, texts))
+        for (const stmt of graph.statements.get(lineIndex) ?? []) {
+          if (stmt.kind !== 'chain' || !stmt.groups.some((group) => group.some((ref) => ref.id === op.id))) continue
+          changes.set(stmt, rebuildChain(ctx, lineIndex, stmt, { dropNodeId: op.id }))
+        }
       }
       // clean up class/style/click statements that reference the node
-      for (const [lineIndex, stmt] of graph.statements) {
+      for (const stmt of [...graph.statements.values()].flat()) {
         if (stmt.kind === 'classAssign' && stmt.ids.includes(op.id) && stmt.idsSpan) {
           const remaining = stmt.ids.filter((i) => i !== op.id)
-          if (remaining.length === 0) edits.push(deleteLineEdit(ctx, lineIndex))
+          if (remaining.length === 0) changes.set(stmt, [])
           else edits.push({ start: stmt.idsSpan.start, end: stmt.idsSpan.end, text: remaining.join(',') })
         } else if ((stmt.kind === 'style' || stmt.kind === 'click') && stmt.ids[0] === op.id) {
-          edits.push(deleteLineEdit(ctx, lineIndex))
+          changes.set(stmt, [])
+        } else if (stmt.kind === 'edgeAttrs') {
+          const associated = graph.edges.filter((edge) => edge.seg.edgeId === stmt.ids[0])
+          if (associated.every((edge) => edge.source === op.id || edge.target === op.id)) changes.set(stmt, [])
         }
       }
       const removedOrders = graph.edges
@@ -388,10 +466,10 @@ export function compileFlowchartOp(ctx: FlowOpContext, op: FlowchartOp): OpResul
         .map((e) => e.order)
         .sort((a, b) => a - b)
       edits.push(
-        ...renumberLinkStyles(ctx, (i) => {
+        ...statementEdits(ctx, renumberLinkStyles(ctx, (i) => {
           if (removedOrders.includes(i)) return null
           return i - removedOrders.filter((r) => r < i).length
-        }),
+        }, changes)),
       )
       return { edits }
     }
@@ -414,7 +492,7 @@ export function compileFlowchartOp(ctx: FlowOpContext, op: FlowchartOp): OpResul
     case 'reverseEdge': {
       const edge = findEdge(graph, op.edgeId)
       if (!edge) return null
-      const stmt = graph.statements.get(edge.lineIndex)
+      const stmt = graph.statements.get(edge.lineIndex)?.[edge.stmtIndex]
       // only safe on a simple `A --> B` statement — in chains/fans, swapping
       // the two refs would silently rewire the neighbors
       if (!stmt || stmt.kind !== 'chain' || stmt.groups.length !== 2) return null
@@ -433,16 +511,16 @@ export function compileFlowchartOp(ctx: FlowOpContext, op: FlowchartOp): OpResul
       const node = nodeOf(graph, op.id)
       if (!node) return null
       // manage a `style <id> k:v,k:v` statement for this node
-      let styleLine = -1
-      for (const [lineIndex, stmt] of graph.statements) {
+      let styleStmt: FlowStmt | undefined
+      for (const stmt of [...graph.statements.values()].flat()) {
         if (stmt.kind === 'style' && stmt.ids[0] === op.id) {
-          styleLine = lineIndex
+          styleStmt = stmt
           break
         }
       }
       const props = new Map<string, string>()
-      if (styleLine >= 0) {
-        const rest = ctx.lines[styleLine].text.trim().replace(new RegExp(`^style\\s+${op.id}\\s*`), '')
+      if (styleStmt) {
+        const rest = slice(ctx, styleStmt.span).replace(/^style\s+\S+\s*/, '')
         for (const pair of rest.split(',')) {
           const i = pair.indexOf(':')
           if (i > 0) props.set(pair.slice(0, i).trim(), pair.slice(i + 1).trim())
@@ -454,35 +532,34 @@ export function compileFlowchartOp(ctx: FlowOpContext, op: FlowchartOp): OpResul
       if (props.has('stroke') && !props.has('stroke-width')) props.set('stroke-width', '2px')
       if (!props.has('stroke')) props.delete('stroke-width')
 
-      const text = `${styleLine >= 0 ? ctx.lines[styleLine].indent : bodyIndent(ctx)}style ${op.id} ${[...props].map(([k, v]) => `${k}:${v}`).join(',')}`
-      if (styleLine >= 0) {
-        return { edits: [props.size === 0 ? deleteLineEdit(ctx, styleLine) : replaceLineEdit(ctx, styleLine, [text])] }
+      const text = `style ${op.id} ${[...props].map(([k, v]) => `${k}:${v}`).join(',')}`
+      if (styleStmt) {
+        return { edits: statementEdits(ctx, new Map([[styleStmt, props.size === 0 ? [] : [text]]])) }
       }
       if (props.size === 0) return { edits: [] }
-      return { edits: [insertLinesAfter(ctx, graph.lastContentLine, [text])] }
+      return { edits: [insertLinesAfter(ctx, graph.lastContentLine, [bodyIndent(ctx) + text])] }
     }
 
     case 'setEdgeColor': {
       const edge = findEdge(graph, op.edgeId)
       if (!edge) return null
       // linkStyle addresses edges by render index (== document order)
-      let linkLine = -1
-      for (const [lineIndex, stmt] of graph.statements) {
+      let linkStmt: FlowStmt | undefined
+      for (const stmt of [...graph.statements.values()].flat()) {
         if (stmt.kind !== 'linkStyle') continue
-        const m = /^linkStyle\s+(\d+)\b/.exec(ctx.lines[lineIndex].text.trim())
+        const m = /^linkStyle\s+(\d+)\b/.exec(slice(ctx, stmt.span))
         if (m && Number(m[1]) === edge.order) {
-          linkLine = lineIndex
+          linkStmt = stmt
           break
         }
       }
       if (op.value === null) {
-        if (linkLine === -1) return { edits: [] }
-        return { edits: [deleteLineEdit(ctx, linkLine)] }
+        if (!linkStmt) return { edits: [] }
+        return { edits: statementEdits(ctx, new Map([[linkStmt, []]])) }
       }
-      const indent = linkLine >= 0 ? ctx.lines[linkLine].indent : bodyIndent(ctx)
-      const text = `${indent}linkStyle ${edge.order} stroke:${op.value},stroke-width:2px`
-      if (linkLine >= 0) return { edits: [replaceLineEdit(ctx, linkLine, [text])] }
-      return { edits: [insertLinesAfter(ctx, graph.lastContentLine, [text])] }
+      const text = `linkStyle ${edge.order} stroke:${op.value},stroke-width:2px`
+      if (linkStmt) return { edits: statementEdits(ctx, new Map([[linkStmt, [text]]])) }
+      return { edits: [insertLinesAfter(ctx, graph.lastContentLine, [bodyIndent(ctx) + text])] }
     }
 
     case 'renameSubgraph': {
@@ -492,7 +569,9 @@ export function compileFlowchartOp(ctx: FlowOpContext, op: FlowchartOp): OpResul
         return { edits: [{ start: sg.titleSpan.start, end: sg.titleSpan.end, text: op.title.replace(/[\]"]/g, '') }] }
       }
       const line = ctx.lines[sg.openLine]
-      return { edits: [{ start: line.end, end: line.end, text: ` [${op.title.replace(/[\]"]/g, '')}]` }] }
+      const stmt = graph.statements.get(sg.openLine)?.find((item) => item.kind === 'subgraphOpen' && item.id === sg.id)
+      const at = stmt?.span.end ?? lineBody(line).end
+      return { edits: [{ start: at, end: at, text: ` [${op.title.replace(/[\]"]/g, '')}]` }] }
     }
   }
 }

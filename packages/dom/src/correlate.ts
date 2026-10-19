@@ -60,7 +60,8 @@ export function correlateFlowchart(svg: SVGSVGElement, graph: FlowGraph): Correl
   const claimedEdges = new Set<Element>()
   for (const edge of graph.edges) {
     const re = new RegExp(`^L[-_]${esc(edge.source)}[-_]${esc(edge.target)}[-_]\\d+`)
-    const el = edgeEls.find((e) => !claimedEdges.has(e) && re.test(e.id))
+    const el = edgeEls.find((e) => !claimedEdges.has(e) && e.id === edge.seg.edgeId)
+      ?? edgeEls.find((e) => !claimedEdges.has(e) && re.test(e.id))
     if (el) {
       edges.set(edge.entityId, el)
       claimedEdges.add(el)
