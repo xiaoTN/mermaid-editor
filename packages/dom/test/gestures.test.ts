@@ -15,6 +15,7 @@ let host: HTMLElement, editor: MermaidWysiwygEditor, view: MermaidCanvasView
 const pointer = (el: EventTarget, type: string, x = 0) => el.dispatchEvent(new MouseEvent(type, { bubbles: true, clientX: x, clientY: 30, button: 0 }))
 const find = (id: string) => host.querySelector(`[data-mw-entity="${id}"]`)!
 const handle = (label: string) => {
+  if (label === '拖动箭头终点') return host.querySelector('[data-end="target"]')!
   const key = Object.entries(messages['zh-CN']).find(([, value]) => value === label)?.[0]
   return host.querySelector(`[aria-label="${key ? t(key) : label}"]`)!
 }
@@ -68,6 +69,37 @@ describe.each(['zh-CN', 'en'] as const)('%s 画布手势', locale => {
     pointer(host.querySelector('.mw-ports button')!, 'pointerdown'); drop(find('node:C'))
     expect(editor.result.flowchart!.edges.map(e => `${e.source}->${e.target}`)).toEqual(['A->B', 'A->C'])
     editor.undo(); expect(editor.code).toBe(CODE)
+  })
+  it('拖出重复连线时提示、代码与历史不变，四边圆点有产品 aria', () => {
+    pointer(find('node:A'), 'pointerover')
+    const dots = host.querySelectorAll('.mw-ports button')
+    expect(dots).toHaveLength(4)
+    for (const dot of dots) expect(dot.getAttribute('aria-label')).toBe(t('aria.connectDot'))
+    pointer(dots[0], 'pointerdown'); drop(find('node:B'))
+    expect(editor.code).toBe(CODE)
+    expect(editor.canUndo).toBe(false)
+    expect(host.querySelector('.mw-toast')?.textContent).toBe(t('toast.dupEdge'))
+  })
+  it('宽命中路径可选中箭头、悬停变色，两端蓝点共用产品 aria', () => {
+    const hit = host.querySelector('.mw-edge-hit')!
+    expect(hit.getAttribute('stroke-width')).toBe('12')
+    expect(hit.getAttribute('pointer-events')).toBe('stroke')
+    expect(hit.hasAttribute('id')).toBe(false)
+    hit.dispatchEvent(new Event('pointerenter'))
+    expect(host.querySelector('#L_A_B_0')?.classList.contains('mw-edge-hover')).toBe(true)
+    pointer(hit, 'click')
+    expect(editor.selection).toEqual(['edge:A->B#0'])
+    expect(host.querySelectorAll('.mw-endpoints button')).toHaveLength(2)
+    for (const dot of host.querySelectorAll('.mw-endpoints button')) expect(dot.getAttribute('aria-label')).toBe(t('aria.edgeEndDot'))
+  })
+  it('空白连线菜单可取消且不改代码，切换语言立即刷新', () => {
+    pointer(find('node:A'), 'pointerover'); pointer(host.querySelector('.mw-ports button')!, 'pointerdown'); drop(null)
+    setLocale(locale === 'en' ? 'zh-CN' : 'en')
+    const cancel = host.querySelector<HTMLButtonElement>('.mw-new-node-menu button:last-child')!
+    expect(cancel.textContent).toBe(t('menu.cancel'))
+    pointer(cancel, 'click')
+    expect(host.querySelector('.mw-new-node-menu')).toBeNull()
+    expect(editor.code).toBe(CODE); expect(editor.canUndo).toBe(false)
   })
   it('空白处菜单新建节点并连线，一次撤销回到原始字节', () => {
     pointer(find('node:A'), 'pointerover'); pointer(host.querySelector('.mw-ports button')!, 'pointerdown'); drop(null)

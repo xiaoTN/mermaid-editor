@@ -135,8 +135,8 @@ describe('流程图语句和原文保留', () => {
     expect(ed.result.flowchart!.statements.has(2)).toBe(false)
     const ref = ed.result.flowchart!.nodeById.get('A')!.primary!.ref
     expect(code.slice(ref.labelSpan!.start, ref.labelSpan!.end)).toBe(['第一;行', '%% 第二行', '', '第三行'].join(eol))
-    ed.dispatch({ type: 'connect', source: 'A', target: 'B' })
-    expectUndoRedo(ed, code, code.slice(0, -eol.length) + eol + '\tA --> B' + eol)
+    ed.dispatch({ type: 'connect', source: 'A', target: 'C' })
+    expectUndoRedo(ed, code, code.slice(0, -eol.length) + eol + '\tA --> C' + eol)
   })
 
   it('修改 Markdown 节点形状时保留引号、反引号和续行', () => {

@@ -7,7 +7,7 @@ export default defineConfig({
   base: './',
   optimizeDeps: {
     exclude: ['@inkeep/mermaid-wysiwyg-core', '@inkeep/mermaid-wysiwyg-dom', '@inkeep/mermaid-wysiwyg-codemirror', '@inkeep/mermaid-wysiwyg-react'],
-    include: ['mermaid', '@mermaid-js/mermaid-zenuml', 'react', 'react-dom'],
+    include: ['mermaid', 'react', 'react-dom'],
   },
   server: {
     port: 5173,

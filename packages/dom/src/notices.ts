@@ -1,7 +1,7 @@
 import type { MermaidWysiwygEditor, EditorNotice } from '@inkeep/mermaid-wysiwyg-core'
 import { onLocaleChange, t } from './i18n'
 
-export function mountNotices(host: HTMLElement, editor: MermaidWysiwygEditor, readonly: () => boolean) {
+export function mountNotices(host: HTMLElement, editor: MermaidWysiwygEditor, readonly: () => boolean, hintContainer: HTMLElement = host) {
   const toast = document.createElement('div'), hint = document.createElement('div'), badge = document.createElement('div')
   toast.className = 'mw-toast'; toast.setAttribute('role', 'status'); toast.setAttribute('aria-live', 'polite')
   hint.className = 'mw-first-hint'; badge.className = 'mw-readonly-hint'
@@ -20,7 +20,8 @@ export function mountNotices(host: HTMLElement, editor: MermaidWysiwygEditor, re
     try { localStorage.setItem('mermaid-editor.hintDismissed', '1') } catch { /* unavailable storage */ }
     update()
   }
-  host.append(toast, hint, badge)
+  host.append(toast, badge)
+  hintContainer.append(hint)
   const off = editor.on('warning', next => {
     notices = next; update(); clearTimeout(timer)
     timer = setTimeout(() => { notices = []; update() }, 4000)

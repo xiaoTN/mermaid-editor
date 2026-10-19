@@ -127,24 +127,12 @@ importers:
       '@inkeep/mermaid-wysiwyg-dom':
         specifier: workspace:*
         version: link:../../packages/dom
-      '@inkeep/mermaid-wysiwyg-monaco':
-        specifier: workspace:*
-        version: link:../../packages/monaco
-      '@inkeep/mermaid-wysiwyg-react':
-        specifier: workspace:*
-        version: link:../../packages/react
       '@lezer/highlight':
         specifier: ^1.2.1
         version: 1.2.3
-      '@mermaid-js/mermaid-zenuml':
-        specifier: ^0.2.0
-        version: 0.2.3(@babel/core@7.29.7)(@babel/template@7.29.7)(@types/react@18.3.31)(mermaid@11.16.0)(tailwindcss@4.3.2)
       mermaid:
         specifier: ^11.6.0
         version: 11.16.0
-      monaco-editor:
-        specifier: ^0.55.1
-        version: 0.55.1
       react:
         specifier: ^18.3.1
         version: 18.3.1

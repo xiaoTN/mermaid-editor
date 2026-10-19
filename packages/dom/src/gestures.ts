@@ -38,6 +38,8 @@ export class FlowchartGestures {
       this.update()
       const button = this.host.querySelector('.mw-new-node-menu button')
       if (button) { button.textContent = t('drag.newNode'); button.setAttribute('aria-label', t('drag.newNode')) }
+      const cancel = this.host.querySelector('.mw-new-node-menu button:last-child')
+      if (cancel) { cancel.textContent = t('menu.cancel'); cancel.setAttribute('aria-label', t('menu.cancel')) }
     }))
     this.disposers.push(editor.on('selectionChange', () => this.update()))
   }
@@ -66,7 +68,7 @@ export class FlowchartGestures {
     this.ports.replaceChildren()
     const id = node.getAttribute('data-mw-entity')!.slice(5), p = this.at(node)
     for (const [x, y] of [[p.x + p.w / 2, p.y], [p.x + p.w, p.y + p.h / 2], [p.x + p.w / 2, p.y + p.h], [p.x, p.y + p.h / 2]]) {
-      this.dot(this.ports, x, y, t('hover.connect'), e => {
+      this.dot(this.ports, x, y, t('aria.connectDot'), e => {
         this.drag = { source: id, x: e.clientX, y: e.clientY, pointerId: e.pointerId }
         this.hint.textContent = ''; this.ends.replaceChildren()
       })
@@ -83,7 +85,7 @@ export class FlowchartGestures {
     if (this.hovered?.isConnected && !this.drag) this.showPorts(this.hovered)
     else if (!this.drag) this.clearPorts()
     const id = this.editor.selection.length === 1 ? this.editor.selection[0] : ''
-    const path = [...this.host.querySelectorAll<SVGPathElement>('path[data-mw-entity]')].find(el => el.getAttribute('data-mw-entity') === id)
+    const path = [...this.host.querySelectorAll<SVGPathElement>('path[data-mw-entity]:not(.mw-edge-hit)')].find(el => el.getAttribute('data-mw-entity') === id)
     if (!id.startsWith('edge:') || !path || this.drag) return
     const box = this.at(path)
     for (const end of ['source', 'target'] as const) {
@@ -96,10 +98,12 @@ export class FlowchartGestures {
           x = p.x - h.left + this.host.scrollLeft; y = p.y - h.top + this.host.scrollTop
         }
       }
-      this.dot(this.ends, x, y, end === 'source' ? t('endpoint.source') : t('endpoint.target'), e => {
+      this.dot(this.ends, x, y, t('aria.edgeEndDot'), e => {
+        // Both endpoints share product copy; data identifies their semantics.
         this.drag = { edgeId: id, end, x: e.clientX, y: e.clientY, pointerId: e.pointerId }
         this.clearPorts()
       })
+      this.ends.lastElementChild?.setAttribute('data-end', end)
     }
   }
 
@@ -147,7 +151,11 @@ export class FlowchartGestures {
     this.host.querySelector('.mw-new-node-menu')?.remove()
     const menu = document.createElement('div'); menu.className = 'mw-plus-menu mw-new-node-menu'
     const b = document.createElement('button'); b.textContent = t('drag.newNode'); b.setAttribute('aria-label', t('drag.newNode'))
-    menu.append(b)
+    const cancel = document.createElement('button')
+    cancel.type = b.type = 'button'
+    cancel.textContent = t('menu.cancel'); cancel.setAttribute('aria-label', t('menu.cancel'))
+    cancel.onclick = () => menu.remove()
+    menu.append(b, cancel)
     const h = this.host.getBoundingClientRect()
     menu.style.left = `${x - h.left + this.host.scrollLeft}px`; menu.style.top = `${y - h.top + this.host.scrollTop}px`
     menu.addEventListener('pointerdown', e => e.stopPropagation())
@@ -180,7 +188,12 @@ export class FlowchartGestures {
 }
 
 export const GESTURE_CSS = `
-.mw-handle { position:absolute; z-index:22; width:12px; height:12px; padding:0; border:2px solid white; border-radius:50%; background:#3784ff; transform:translate(-50%,-50%); cursor:crosshair; touch-action:none; }
-.mw-connect-target { filter:drop-shadow(0 0 6px #3784ff) !important; }
-.mw-connect-hint { position:absolute; z-index:23; pointer-events:none; color:#69a3ff; font:12px/1.4 system-ui; white-space:nowrap; }
+.mw-handle { position:absolute; z-index:22; width:11px; height:11px; padding:0; border:2px solid #2563eb; border-radius:50%; background:white; transform:translate(-50%,-50%); cursor:crosshair; touch-action:none; }
+.mw-connect-target > :is(rect,polygon,path,circle,ellipse) { stroke:#2563eb !important; stroke-width:3px !important; }
+.mw-connect-hint { position:absolute; z-index:23; pointer-events:none; padding:4px 8px; border-radius:4px; background:#111827; color:white; font:12px/1.4 system-ui; white-space:nowrap; }
+.mw-connect-hint:empty { display:none; }
+.mw-canvas:has(.mw-connect-target) .mw-connect-hint { background:#eff6ff; color:#2563eb; border:1px solid #93c5fd; }
+.mw-canvas .mw-edge-hit { stroke:transparent !important; stroke-width:12px !important; fill:none !important; pointer-events:stroke; filter:none !important; }
+.mw-canvas .mw-edge-hover { stroke:#2563eb !important; }
+.mw-canvas [contenteditable="true"]:empty:before { content:attr(placeholder); color:#64748b; font-size:12px; }
 `

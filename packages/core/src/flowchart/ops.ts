@@ -399,6 +399,11 @@ export function compileFlowchartOp(ctx: FlowOpContext, op: FlowchartOp): OpResul
       const src = nodeOf(graph, op.source)
       const tgt = nodeOf(graph, op.target)
       if (!src || !tgt) return null
+      if (graph.edges.some(edge => edge.source === op.source && edge.target === op.target &&
+        edge.seg.line === (op.line ?? 'solid') && edge.seg.arrowStart === 'open' &&
+        edge.seg.arrowEnd === (op.arrowEnd ?? 'arrow'))) {
+        return { edits: [], warnings: [{ key: 'toast.dupEdge' }] }
+      }
       const opStr = edgeOpString(op.line ?? 'solid', op.arrowEnd ?? 'arrow')
       const label = op.label ? `|${printEdgeLabel(op.label)}|` : ''
       let after = lastRefLine(graph, [op.source, op.target])

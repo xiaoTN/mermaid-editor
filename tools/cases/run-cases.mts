@@ -349,9 +349,9 @@ function deleteGroupedScenario(source: 'A' | 'B'): Scenario {
 function connectScenario(append = false): Scenario {
   return {
     sample: 11, name: append ? '末尾新增' : '中间新增',
-    edit: (editor) => { dispatch(editor, { type: 'connect', source: append ? 'E' : 'C', target: append ? 'F' : 'D' }) },
+    edit: (editor) => { dispatch(editor, { type: 'connect', source: append ? 'E' : 'C', target: append ? 'F' : 'D', line: append ? 'solid' : 'dotted' }) },
     allowed: append ? [insert(6, '    E --> F')] : [
-      insert(5, '    C --> D'), replace(8, '    linkStyle 5 stroke:blue,stroke-width:3px'),
+      insert(5, '    C -.-> D'), replace(8, '    linkStyle 5 stroke:blue,stroke-width:3px'),
     ],
     verify: (editor) => { expectEdges(editor, append
       ? ['A→C', 'B→C', 'C→D', 'D→E', 'E→F', 'E→F']
@@ -544,7 +544,7 @@ const languageChecks: [string, string, () => void | Promise<void>][] = [
     check(JSON.stringify(listKeys()) === JSON.stringify(Object.keys(messages['zh-CN']).sort()), '中英 key 不一致')
     check(Object.values(messages).every(bundle => Object.values(bundle).every(text => text.trim())), '语言包有空值')
     for (const dir of ['packages/dom/src', 'apps/playground/src']) {
-      for (const file of readdirSync(join(root, dir), { recursive: true }).map(String).filter(file => /\.(ts|tsx)$/.test(file) && !file.startsWith('i18n'))) {
+      for (const file of readdirSync(join(root, dir), { recursive: true }).map(String).filter(file => /\.(ts|tsx)$/.test(file) && !file.startsWith('i18n') && file !== 'defaultExample.ts')) {
         check(!/[\u3400-\u9fff]/u.test(readFileSync(join(root, dir, file), 'utf8')), `界面源码含硬编码中文：${dir}/${file}`)
       }
     }

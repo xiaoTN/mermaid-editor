@@ -5,8 +5,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { MermaidWysiwygEditor } from '@inkeep/mermaid-wysiwyg-core'
 import { MermaidCanvasView, getLocale, listKeys, messages, setLocale, t } from '../src'
 import App from '../../../apps/playground/src/App'
+import { readFileSync, readdirSync } from 'node:fs'
+import { join } from 'node:path'
 
-vi.mock('mermaid', () => ({ default: { initialize() {}, async render() { return { svg: '<svg xmlns="http://www.w3.org/2000/svg"/>' } }, async parse() {} } }))
+vi.mock('../../../apps/playground/node_modules/mermaid', () => ({ default: { initialize() {}, async render() { return { svg: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300"/>' } }, async parse() {} } }))
 
 const CJK = /[\u3400-\u9fff]/u
 const before = 'flowchart LR\r\n\tA[甲] & B[乙] --> C  \r\n\tstyle A fill:red\r\n'
@@ -16,10 +18,13 @@ function assertEnglish(root: Element) {
   const clone = root.cloneNode(true) as Element
   // User-authored diagram labels and source code do not follow the UI locale.
   clone.querySelectorAll('.mw-svg-host, .codepane, style, script').forEach(el => el.remove())
+  clone.querySelectorAll('.mw-inplace-editor').forEach(el => { el.textContent = '' })
   expect(clone.textContent).not.toMatch(CJK)
   for (const el of clone.querySelectorAll('*')) {
     expect(el.getAttribute('aria-label') ?? '').not.toMatch(CJK)
     expect(el.getAttribute('title') ?? '').not.toMatch(CJK)
+    expect(el.getAttribute('placeholder') ?? '').not.toMatch(CJK)
+    expect(el.getAttribute('aria-placeholder') ?? '').not.toMatch(CJK)
   }
 }
 beforeEach(async () => {
@@ -37,6 +42,33 @@ beforeEach(async () => {
 afterEach(() => { view.destroy(); host.remove(); vi.unstubAllGlobals(); setLocale('zh-CN'); localStorage.clear() })
 
 describe('语言包和界面', () => {
+  it('源码中文字面量只允许出现在中文语言包和默认示例', () => {
+    const scan = (path: string): string[] => readdirSync(path, { withFileTypes: true }).flatMap(entry =>
+      entry.isDirectory() ? scan(join(path, entry.name)) : /\.(?:tsx?|css)$/.test(entry.name) ? [join(path, entry.name)] : [])
+    const files = [...scan('src'), ...scan('../../apps/playground/src')]
+    for (const file of files.filter(file => !/(?:zh-CN|defaultExample)\.ts$/.test(file))) {
+      expect(readFileSync(file, 'utf8'), file).not.toMatch(CJK)
+    }
+  })
+  it('产品补充文案逐字一致，旧演示 key 和临时名已清除', () => {
+    const pairs = {
+      'toast.copied': ['代码已复制', 'Code copied'], 'hint.close': ['关闭', 'Close'],
+      'aria.langSwitch': ['切换界面语言', 'Switch interface language'],
+      'edit.placeholder': ['输入文字，Enter 确认，Esc 取消', 'Type text, Enter to confirm, Esc to cancel'],
+      'aria.connectDot': ['从这里拖出连线', 'Drag from here to connect'],
+      'aria.edgeEndDot': ['拖动以改变箭头指向', 'Drag to change arrow target'],
+      'err.open': ['打不开这个文件：{reason}', "Couldn't open this file: {reason}"],
+      'err.save': ['保存失败，内容还在，请重试：{reason}', 'Save failed, your changes are kept. Try again: {reason}'],
+      'menu.cancel': ['取消', 'Cancel'],
+    }
+    for (const [key, [zh, en]] of Object.entries(pairs)) {
+      expect(t(key)).toBe(zh)
+      setLocale('en'); expect(t(key)).toBe(en); setLocale('zh-CN')
+    }
+    expect(listKeys()).not.toContain('endpoint.target')
+    expect(listKeys()).not.toContain('app.playground')
+    expect(listKeys()).not.toContain('app.monaco')
+  })
   it('两套 key 完全一致、非空，listKeys 排序且产品文案可插值', () => {
     expect(listKeys()).toEqual(Object.keys(messages['zh-CN']).sort())
     expect(listKeys()).toEqual(Object.keys(messages.en).sort())
@@ -87,7 +119,7 @@ describe('语言包和界面', () => {
     view.setReadOnly(true); assertEnglish(host)
   })
   it('首次提示可关闭，重建画布后不再出现', async () => {
-    host.querySelector<HTMLButtonElement>('[aria-label="关闭提示"]')!.click()
+    host.querySelector<HTMLButtonElement>('[aria-label="关闭"]')!.click()
     expect(localStorage.getItem('mermaid-editor.hintDismissed')).toBe('1')
     expect(host.querySelector<HTMLElement>('.mw-first-hint')!.hidden).toBe(true)
     view.destroy()
@@ -95,6 +127,15 @@ describe('语言包和界面', () => {
     await view.render(); setLocale('en'); assertEnglish(host)
     expect(host.querySelector<HTMLElement>('.mw-first-hint')!.hidden).toBe(true)
     expect(host.querySelector('.mw-error-badge')?.textContent).toBe('Code error, canvas paused')
+  })
+  it('双击文字编辑器的 placeholder 和 aria 随语言即时切换', () => {
+    view.editEntityLabel('node:A')
+    const input = host.querySelector('[contenteditable="true"]')!
+    expect(input.getAttribute('placeholder')).toBe(t('edit.placeholder'))
+    setLocale('en')
+    expect(input.getAttribute('placeholder')).toBe('Type text, Enter to confirm, Esc to cancel')
+    expect(input.getAttribute('aria-placeholder')).toBe(t('edit.placeholder'))
+    assertEnglish(host)
   })
   it('重新载入语言模块读取上次保存的选择', async () => {
     localStorage.setItem('mermaid-editor.locale', 'en')

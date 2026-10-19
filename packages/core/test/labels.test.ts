@@ -87,7 +87,7 @@ describe('flowchart label escaping', () => {
     ['a|b', 'a#124;b'], ['|', '#124;'],
     ['a|"b" &quot; #35;', 'a#124;#quot;b#quot; &quot; #35;'],
   ])('connect encodes pipes without dropping label characters (%j)', (label, encoded) => {
-    const before = 'flowchart LR\r\n\tA --> B;  \r\n\t%% 保留'
+    const before = 'flowchart LR\r\n\tA -.-> B;  \r\n\t%% 保留'
     const editor = new MermaidWysiwygEditor({ code: before })
     editor.dispatch({ type: 'connect', source: 'A', target: 'B', label })
     expect(editor.result.flowchart!.edges).toHaveLength(2)

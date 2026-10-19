@@ -226,7 +226,7 @@ describe('ops → minimal text edits', () => {
     expect(ed2.code).toContain('linkStyle 1 stroke:#0f0')
     // inserting an edge mid-order (after B's last ref, before C-->D) shifts later styles up
     const ed3 = new MermaidWysiwygEditor({ code })
-    ed3.dispatch({ type: 'connect', source: 'A', target: 'B' })
+    ed3.dispatch({ type: 'connect', source: 'A', target: 'B', line: 'dotted' })
     expect(ed3.code).toContain('linkStyle 1 stroke:#f00')
     expect(ed3.code).toContain('linkStyle 3 stroke:#0f0')
   })

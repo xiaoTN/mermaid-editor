@@ -58,6 +58,8 @@ export interface ViewOptions {
   mermaidConfig?: Record<string, unknown>
   debounceMs?: number
   readOnly?: boolean
+  /** Optional host for the full-width first-run hint. */
+  hintContainer?: HTMLElement
   /**
    * Canvas pan/zoom: fit-to-canvas on first render, drag empty space to pan,
    * ctrl/cmd+wheel (or trackpad pinch) to zoom, plus corner zoom controls.
@@ -296,7 +298,7 @@ export class MermaidCanvasView {
     this.popover = new Popover(this.overlayHost)
     this.gestures = new FlowchartGestures(this.editor, this.container, () => this.readOnly, () => this.updatePopover())
 
-    this.notices = mountNotices(this.container, this.editor, () => this.readOnly)
+    this.notices = mountNotices(this.container, this.editor, () => this.readOnly, options.hintContainer)
 
     this.mermaid.initialize(this.mermaidConfig)
 
@@ -307,7 +309,11 @@ export class MermaidCanvasView {
         if (this.lastError) this.errorBadge.textContent = t('status.parseError')
         const keys = ['ui.zoomOut', 'ui.zoomIn', 'ui.fitDiagram']
         this.zoomControls?.querySelectorAll('button').forEach((b, i) => { b.title = t(keys[i]); b.setAttribute('aria-label', t(keys[i])) })
-        this.container.querySelectorAll('[contenteditable="true"]').forEach(el => el.setAttribute('aria-label', t('ui.inlineEditor')))
+        this.container.querySelectorAll('[contenteditable="true"]').forEach(el => {
+          el.setAttribute('aria-label', t('ui.inlineEditor'))
+          el.setAttribute('placeholder', t('edit.placeholder'))
+          el.setAttribute('aria-placeholder', t('edit.placeholder'))
+        })
       }),
       this.editor.on('change', () => this.scheduleRender()),
       this.editor.on('selectionChange', () => this.applySelectionStyles()),
@@ -681,6 +687,22 @@ export class MermaidCanvasView {
                   ? correlateLineItems(svg, this.editor.result.lineItems)
                   : null
     this.seqCorrelation = sequence ? correlateSequence(svg, sequence) : null
+    for (const path of svg.querySelectorAll<SVGPathElement>('path[data-mw-entity^="edge:"]')) {
+      const hit = path.cloneNode(false) as SVGPathElement
+      hit.removeAttribute('id')
+      hit.removeAttribute('style')
+      for (const attr of ['marker-start', 'marker-mid', 'marker-end']) hit.removeAttribute(attr)
+      hit.setAttribute('class', 'mw-edge-hit')
+      hit.setAttribute('fill', 'none')
+      hit.setAttribute('stroke', 'transparent')
+      hit.setAttribute('stroke-width', '12')
+      hit.setAttribute('pointer-events', 'stroke')
+      path.before(hit)
+      hit.addEventListener('pointerenter', () => path.classList.add('mw-edge-hover'))
+      hit.addEventListener('pointerleave', () => path.classList.remove('mw-edge-hover'))
+      path.addEventListener('pointerenter', () => path.classList.add('mw-edge-hover'))
+      path.addEventListener('pointerleave', () => path.classList.remove('mw-edge-hover'))
+    }
     this.clearLifelineUi()
 
     svg.addEventListener('click', (e) => this.onSvgClick(e))
@@ -1157,6 +1179,9 @@ export class MermaidCanvasView {
 
     label.setAttribute('contenteditable', 'true')
     label.setAttribute('aria-label', t('ui.inlineEditor'))
+    label.setAttribute('placeholder', t('edit.placeholder'))
+    label.setAttribute('aria-placeholder', t('edit.placeholder'))
+    label.setAttribute('role', 'textbox')
     // the box can't grow while renders are held — keep the text on one line
     // and let it spill past the shape instead of wrapping into the clip
     const clipHost = label.closest('foreignObject') as SVGElement | null
@@ -1195,6 +1220,9 @@ export class MermaidCanvasView {
       if (session.liveTimer) clearTimeout(session.liveTimer)
       label.removeAttribute('contenteditable')
       label.removeAttribute('aria-label')
+      label.removeAttribute('placeholder')
+      label.removeAttribute('aria-placeholder')
+      label.removeAttribute('role')
       label.style.whiteSpace = prevWhiteSpace
       if (clipHost) clipHost.style.overflow = prevClipOverflow
       label.removeEventListener('keydown', onKey)
@@ -1322,10 +1350,13 @@ export class MermaidCanvasView {
     const cs = window.getComputedStyle(paintSource)
     const div = document.createElement('div')
     div.className = 'mw-inplace-editor'
-    div.contentEditable = 'true'
+    div.setAttribute('contenteditable', 'true')
     div.spellcheck = false
     div.textContent = current
     div.setAttribute('aria-label', t('ui.inlineEditor'))
+    div.setAttribute('placeholder', t('edit.placeholder'))
+    div.setAttribute('aria-placeholder', t('edit.placeholder'))
+    div.setAttribute('role', 'textbox')
     // grow from the text's center so it stays visually anchored while typing
     div.style.left = `${box.left + box.width / 2}px`
     div.style.top = `${box.top}px`
@@ -1555,13 +1586,13 @@ export class MermaidCanvasView {
       if (!edge) return []
       return [
         ...(['solid', 'dotted', 'thick'] as const).map((line) => ({
-          glyph: t(`edge.${line}`),
+          glyph: `${line === 'dotted' ? '┄' : line === 'thick' ? '━' : '─'} ${t(`edge.${line}`)}`,
           title: t(`edge.${line}`),
           active: edge.seg.line === line,
           onClick: () => this.editor.dispatch({ type: 'setEdgeStyle', edgeId: id, line, arrowEnd: 'arrow', preserveLabelForm: true }),
         })),
-        { glyph: t('edge.label'), title: t('edge.label'), onClick: () => this.editEntityLabel(id) },
-        { glyph: t('edge.delete'), title: t('edge.delete'), danger: true, onClick: () => this.editor.deleteEntities([id]) },
+        { glyph: `T ${t('edge.label')}`, title: t('edge.label'), onClick: () => this.editEntityLabel(id) },
+        { glyph: `× ${t('edge.delete')}`, title: t('edge.delete'), danger: true, onClick: () => this.editor.deleteEntities([id]) },
       ]
     }
 

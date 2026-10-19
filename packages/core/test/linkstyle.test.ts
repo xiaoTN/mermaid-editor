@@ -42,16 +42,16 @@ describe('linkStyle index remapping', () => {
 
   it('inserts C→D after the entire chain, at index 4, and moves blue to index 5', () => {
     const editor = new MermaidWysiwygEditor({ code: sample })
-    const result = editor.dispatch({ type: 'connect', source: 'C', target: 'D' })!
+    const result = editor.dispatch({ type: 'connect', source: 'C', target: 'D', line: 'dotted' })!
     const insertAt = sample.indexOf('\n    E -.-> F')
     const styleIndex = sample.indexOf('linkStyle 4') + 'linkStyle '.length
     expect(result.edits).toEqual([
-      { start: insertAt, end: insertAt, text: '\n    C --> D' },
+      { start: insertAt, end: insertAt, text: '\n    C -.-> D' },
       { start: styleIndex, end: styleIndex + 1, text: '5' },
     ])
     expectEdges(editor, ['A→C', 'B→C', 'C→D', 'D→E', 'C→D', 'E→F'])
     expectUndoRedo(editor, sample, sample
-      .replace('    E -.-> F', '    C --> D\n    E -.-> F')
+      .replace('    E -.-> F', '    C -.-> D\n    E -.-> F')
       .replace('linkStyle 4', 'linkStyle 5'))
   })
 
@@ -77,7 +77,7 @@ describe('linkStyle index remapping', () => {
     const defaultLine = '\tlinkStyle default\tstroke:#aaa,stroke-width:4px  %% default  \n'
     const code = sample + defaultLine
     const operations: EditorOp[] = [
-      { type: 'connect', source: 'C', target: 'D' },
+      { type: 'connect', source: 'C', target: 'D', line: 'dotted' },
       { type: 'deleteEdge', edgeId: 'edge:B->C#0' },
       { type: 'deleteNode', id: 'C' },
       { type: 'setEdgeColor', edgeId: 'edge:B->C#0', value: 'orange' },
@@ -138,7 +138,7 @@ describe('linkStyle index remapping', () => {
     editor.dispatch({ type: 'deleteEdge', edgeId: editor.result.flowchart!.edges[1].entityId })
     const afterDelete = code.replace('  A --> B\n', '').replace('linkStyle 1,2', 'linkStyle 1').replace('linkStyle 4', 'linkStyle 3')
     expectUndoRedo(editor, code, afterDelete)
-    editor.dispatch({ type: 'connect', source: 'A', target: 'B' })
-    expectUndoRedo(editor, afterDelete, afterDelete.replace('  X --> Y', '  A --> B\n  X --> Y').replace('linkStyle 3', 'linkStyle 4'))
+    editor.dispatch({ type: 'connect', source: 'A', target: 'B', line: 'dotted' })
+    expectUndoRedo(editor, afterDelete, afterDelete.replace('  X --> Y', '  A -.-> B\n  X --> Y').replace('linkStyle 3', 'linkStyle 4'))
   })
 })
