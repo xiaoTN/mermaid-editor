@@ -98,6 +98,7 @@ type EventMap = {
   change: ChangeEvent
   selectionChange: SelectionEvent
   diagnostics: Diagnostic[]
+  warning: string[]
 }
 
 type Listener<T> = (payload: T) => void
@@ -122,6 +123,7 @@ export class MermaidWysiwygEditor {
     change: new Set(),
     selectionChange: new Set(),
     diagnostics: new Set(),
+    warning: new Set(),
   }
   private coalesceMs: number
   private _diagnostics: Diagnostic[] = []
@@ -292,13 +294,16 @@ export class MermaidWysiwygEditor {
       if (!flowchart) return null
       compiled = compileFlowchartOp({ code: this._code, lines, graph: flowchart }, op as FlowchartOp)
     }
-    if (!compiled || compiled.edits.length === 0) {
-      return compiled
-    }
+    if (!compiled) return null
+    const codeBefore = this._code
     this.applyEdits(compiled.edits, origin)
     if (compiled.created?.length) {
       this.setSelection(compiled.created, origin)
+      if (this._code !== codeBefore) {
+        this.undoStack[this.undoStack.length - 1].selectionAfter = [...this._selection]
+      }
     }
+    if (compiled.warnings?.length) this.emit('warning', compiled.warnings)
     return compiled
   }
 

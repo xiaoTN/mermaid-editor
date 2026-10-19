@@ -162,7 +162,7 @@ describe('ops → minimal text edits', () => {
     expect(ed.code).toBe('flowchart LR\n  A[Start]\n  B --> C\n')
   })
 
-  it('deleteNode removes its edges, splits chains, cleans class/style', () => {
+  it('deleteNode removes its edges, splits chains, preserves class/style with warnings', () => {
     const code = `flowchart LR
   A[Start] --> B[Mid] --> C[End]
   D --> B
@@ -170,13 +170,15 @@ describe('ops → minimal text edits', () => {
   style B fill:#f00
 `
     const ed = new MermaidWysiwygEditor({ code })
-    ed.dispatch({ type: 'deleteNode', id: 'B' })
+    const result = ed.dispatch({ type: 'deleteNode', id: 'B' })!
+    expect(result.warnings).toHaveLength(2)
     // A, C keep their declarations; D survives as an isolated node
     expect(ed.code).toBe(`flowchart LR
   A[Start]
   C[End]
   D
-  class C important
+  class B,C important
+  style B fill:#f00
 `)
   })
 

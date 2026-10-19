@@ -7,15 +7,13 @@ import {
   MermaidWysiwygEditor, detectDiagramType,
   type EditorOp, type FlowEdge, type OpResult,
 } from '../../packages/core/src/index.ts'
-import { assertAllowedChanges, lineDiff, type AllowedChange } from './line-diff.mts'
+import { assertAllowedChanges, assertOnlyReplacesLine, lineDiff, type AllowedChange } from './line-diff.mts'
 
 // 仅写入仓库根目录的 out/cases；testdata 中的样例、规则和校验器始终只读。
 const root = fileURLToPath(new URL('../../', import.meta.url))
 const samples = join(root, 'testdata', 'samples')
 const output = join(root, 'out', 'cases')
 mkdirSync(output, { recursive: true })
-
-class PendingCase extends Error {}
 
 function check(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message)
@@ -38,38 +36,18 @@ function dispatch(editor: MermaidWysiwygEditor, op: EditorOp): OpResult {
   return result
 }
 
-type RetargetOp = { type: 'retargetEdge'; edgeId: string; end: 'source' | 'target'; nodeId: string }
-let hasRetarget: boolean | undefined
-
-function requireRetarget(): void {
-  if (hasRetarget === undefined) {
-    const editor = new MermaidWysiwygEditor({ code: 'flowchart LR\n  A --> B\n  C\n' })
-    const op: RetargetOp = { type: 'retargetEdge', edgeId: edge(editor, 'A', 'B').entityId, end: 'target', nodeId: 'C' }
-    // 当前联合类型还没有这个操作；只在运行器边界传入未来操作。
-    // 未知 switch 分支返回 undefined；已实现但错误地返回 null 必须报失败。
-    const result: OpResult | null | undefined = editor.dispatch(op as unknown as EditorOp)
-    hasRetarget = result !== undefined
-    if (hasRetarget) {
-      check(result?.edits.length, 'retargetEdge 已被识别，但有效端点变更没有生成文本改动')
-      edge(editor, 'A', 'C')
-    }
-  }
-  if (!hasRetarget) throw new PendingCase('尚未实现 retargetEdge（第 5 步）')
-}
-
 function retarget(editor: MermaidWysiwygEditor, source: string, target: string, nodeId: string, occurrence = 0) {
-  requireRetarget()
-  const op: RetargetOp = {
+  dispatch(editor, {
     type: 'retargetEdge', edgeId: edge(editor, source, target, occurrence).entityId, end: 'target', nodeId,
-  }
-  dispatch(editor, op as unknown as EditorOp)
+  })
 }
 
 interface Scenario {
   sample: number
   name?: string
   edit: (editor: MermaidWysiwygEditor) => void
-  allowed: AllowedChange[]
+  /** 数字表示只允许替换这一条原始行，拆行方式由语义断言约束。 */
+  allowed: AllowedChange[] | number
   verify?: (editor: MermaidWysiwygEditor) => void
   expectedUndos?: number
   maxMs?: number
@@ -150,7 +128,7 @@ function case06(): Scenario[] {
   return [{
     sample: 3,
     edit: (editor) => { dispatch(editor, { type: 'connect', source: 'DB', target: 'UI' }) },
-    allowed: [insert(13, '        DB --> UI')],
+    allowed: [insert(15, '    DB --> UI')],
     verify: (editor) => {
       edge(editor, 'DB', 'UI')
       check(graph(editor).nodeById.get('UI')?.subgraph === '前端', '核心图中的 UI 子图归属改变')
@@ -314,13 +292,17 @@ function case20(): Scenario[] {
 
 function case21(): Scenario[] { return [decisionScenario()] }
 
-function groupScenario(): Scenario {
+function groupScenario(source: 'A' | 'B' = 'A'): Scenario {
   return {
     sample: 11,
-    edit: (editor) => retarget(editor, 'A', 'C', 'F'),
-    // CODEX_TASKS 第 5 步的后定规则覆盖 CASES 22：拆出的边放在原行上方。
-    allowed: [replace(3, '    A[甲] --> F', '    B[乙] --> C{判断}')],
-    verify: (editor) => { expectEdges(editor, ['A→F', 'B→C', 'C→D', 'D→E', 'E→F']) },
+    edit: (editor) => retarget(editor, source, 'C', 'F'),
+    // 10/19 最新规则：按原边序拆行，22 和 22b 分别覆盖第 0、1 条边。
+    allowed: 3,
+    verify: (editor) => {
+      expectEdges(editor, [source === 'A' ? 'A→F' : 'A→C', source === 'B' ? 'B→F' : 'B→C', 'C→D', 'D→E', 'E→F'])
+      check(['A', 'B'].every((id) => graph(editor).nodeById.get(id)?.shape === 'rect') &&
+        graph(editor).nodeById.get('A')?.label === '甲' && graph(editor).nodeById.get('B')?.label === '乙', 'A、B 的形状或文字丢失')
+    },
   }
 }
 
@@ -362,20 +344,49 @@ function connectScenario(append = false): Scenario {
 }
 
 function case22(): Scenario[] { return [groupScenario()] }
+function case22b(): Scenario[] { return [groupScenario('B')] }
 function case23(): Scenario[] { return [chainScenario()] }
 function case24(): Scenario[] { return [deleteGroupedScenario('B')] }
 function case25(): Scenario[] { return [deleteGroupedScenario('A')] }
 function case26(): Scenario[] { return [connectScenario(), connectScenario(true)] }
 function case27(): Scenario[] {
-  requireRetarget()
-  return [groupScenario(), chainScenario(), deleteGroupedScenario('B'), deleteGroupedScenario('A'), connectScenario()]
-    .map((scenario, index) => ({ ...scenario, name: `用例${22 + index}`, expectedUndos: 1 }))
+  return [groupScenario(), groupScenario('B'), chainScenario(), deleteGroupedScenario('B'), deleteGroupedScenario('A'), connectScenario(), connectScenario(true)]
+    .map((scenario, index) => ({ ...scenario, name: `用例${['22', '22b', '23', '24', '25', '26中间', '26末尾'][index]}`, expectedUndos: 1 }))
+}
+
+function case28(): Scenario[] {
+  // allowed 限制改动范围，语义断言约束边序，同时验证样式后缀和 default
+  // 在删边、拆行、改端点及插入边之后仍保持原始字节。
+  const scenarios = [...case10(), groupScenario(), groupScenario('B'), chainScenario(),
+    deleteGroupedScenario('B'), deleteGroupedScenario('A'), connectScenario(), connectScenario(true)]
+  const originalDefault = readFileSync(join(samples, '04-styles-comments.mmd'), 'utf8')
+    .split(/\r?\n/).find((line) => /^\s*linkStyle default\b/.test(line))!
+  return [...scenarios.map((scenario, index) => ({
+    ...scenario, name: `样式检查${index + 1}`,
+    verify: (editor: MermaidWysiwygEditor) => {
+      scenario.verify?.(editor)
+      if (scenario.sample === 4) check(editor.code.split(/\r?\n/).includes(originalDefault), 'linkStyle default 原文发生改动')
+      const suffixes = [...graph(editor).statements.values()].flat()
+        .filter((stmt) => stmt.kind === 'linkStyle')
+        .map((stmt) => editor.code.slice(stmt.span.start, stmt.span.end).replace(/^linkStyle\s+(?:default|\d+(?:\s*,\s*\d+)*)/, ''))
+      const original = readFileSync(join(samples, scenario.sample === 4 ? '04-styles-comments.mmd' : '11-linkstyle-split.mmd'), 'utf8')
+      check(suffixes.every((suffix) => original.includes(suffix)), 'linkStyle 的样式部分发生改动')
+    },
+  })), {
+    sample: 4, name: '删节点只提示', allowed: [drop(7)],
+    edit: (editor: MermaidWysiwygEditor) => {
+      const warnings: string[][] = []
+      editor.on('warning', (messages) => warnings.push(messages))
+      const result = dispatch(editor, { type: 'deleteNode', id: 'a4' })
+      check(result.warnings?.length === 2 && warnings[0] === result.warnings, 'class/click 的中文提示或 warning 事件缺失')
+      check(result.warnings.every((warning) => warning.includes('节点 a4，请手动处理')), '提示内容不正确')
+    },
+  }]
 }
 
 function message(error: unknown): string { return error instanceof Error ? error.message : String(error) }
 
-function runScenario(id: number, scenario: Scenario, index: number): number | undefined {
-  const number = String(id).padStart(2, '0')
+function runScenario(number: string, scenario: Scenario, index: number): number | undefined {
   const prefix = String(scenario.sample).padStart(2, '0') + '-'
   const filename = readdirSync(samples).find((name) => name.startsWith(prefix) && name.endsWith('.mmd'))
   check(filename, `找不到样例 ${prefix}`)
@@ -391,13 +402,11 @@ function runScenario(id: number, scenario: Scenario, index: number): number | un
   let forwardMs = 0
   let totalMs = 0
   let checkerOutput = ''
-  let pending = false
   const verify = (label: string, action: () => void) => {
     try { action() } catch (error) { errors.push(`${label}：${message(error)}`) }
   }
   try {
     try { scenario.edit(editor) } catch (error) {
-      if (error instanceof PendingCase) { pending = true; throw error }
       errors.push(`操作：${message(error)}`)
     }
     forwardMs = performance.now() - started
@@ -412,7 +421,18 @@ function runScenario(id: number, scenario: Scenario, index: number): number | un
       const detail = result.stdout.split(/\r?\n/).filter(Boolean).slice(0, 4).join(' ')
       check(result.status === 0, detail || `校验器异常退出（${result.status ?? result.signal}）`)
     })
-    verify('允许改动', () => assertAllowedChanges(before, editor.code, scenario.allowed))
+    if (number === '06') {
+      const membership = spawnSync(process.execPath, [join(root, 'tools', 'cases', 'check-subgraphs.mjs'), source, target], {
+        cwd: root, encoding: 'utf8', timeout: 30_000,
+      })
+      checkerOutput += membership.stdout + membership.stderr
+      verify('Mermaid 子图归属', () => {
+        check(!membership.error && membership.status === 0, membership.stderr || `子图检查异常退出：${membership.error ?? membership.status}`)
+      })
+    }
+    verify('允许改动', () => typeof scenario.allowed === 'number'
+      ? assertOnlyReplacesLine(before, editor.code, scenario.allowed)
+      : assertAllowedChanges(before, editor.code, scenario.allowed))
     if (scenario.verify) verify('结果', () => scenario.verify!(editor))
     writeFileSync(join(output, `${stem}.diff.json`), JSON.stringify(lineDiff(before, editor.code), null, 2) + '\n')
   } finally {
@@ -426,64 +446,53 @@ function runScenario(id: number, scenario: Scenario, index: number): number | un
     } catch (error) { errors.push(`撤销：${message(error)}`) }
     totalMs = forwardMs + performance.now() - undoStarted
     verify('撤销字节', () => { check(Buffer.from(editor.code, 'utf8').equals(original), '撤销到底后与原文件字节不一致') })
-    if (!pending && scenario.expectedUndos !== undefined) {
+    if (scenario.expectedUndos !== undefined) {
       verify('撤销次数', () => { check(undos === scenario.expectedUndos, `预期 ${scenario.expectedUndos} 次，实际 ${undos} 次`) })
     }
-    if (!pending && scenario.maxMs !== undefined) {
+    if (scenario.maxMs !== undefined) {
       verify('性能', () => { check(totalMs < scenario.maxMs!, `核心编辑和撤销耗时 ${totalMs.toFixed(1)} ms，要求 < ${scenario.maxMs} ms`) })
     }
     writeFileSync(log, `${checkerOutput}\n撤销 ${undos} 次，核心编辑和撤销耗时 ${totalMs.toFixed(1)} ms\n${errors.join('\n')}\n`, 'utf8')
-    // 即使用例待实现，任何已经发生的改动也必须能被准确撤销。
     if (errors.length) throw new Error(`${errors.join('；')}（详见 ${relative(root, log)}）`)
   }
   return scenario.maxMs === undefined ? undefined : totalMs
 }
 
-const cases = [case01, case02, case03, case04, case05, case06, case07, case08, case09,
+const cases: [string, () => Scenario[]][] = [case01, case02, case03, case04, case05, case06, case07, case08, case09,
   case10, case11, case12, case13, case14, case15, case16, case17, case18, case19,
-  case20, case21, case22, case23, case24, case25, case26, case27]
+  case20, case21, case22, case23, case24, case25, case26, case27, case28]
+  .map((run, index) => [String(index + 1).padStart(2, '0'), run])
+cases.splice(22, 0, ['22b', case22b])
 let passed = 0
 let failed = 0
-let pending = 0
 const report: string[] = []
 const print = (text: string) => { console.log(text); report.push(text) }
-for (const [index, makeScenarios] of cases.entries()) {
-  const id = index + 1
-  const number = String(id).padStart(2, '0')
+for (const [number, makeScenarios] of cases) {
   const failures: string[] = []
-  const unavailable: string[] = []
   const times: number[] = []
   try {
     const scenarios = makeScenarios()
     for (const [variant, scenario] of scenarios.entries()) {
       try {
-        const elapsed = runScenario(id, scenario, variant)
+        const elapsed = runScenario(number, scenario, variant)
         if (elapsed !== undefined) times.push(elapsed)
       } catch (error) {
         const reason = `${scenario.name ? `${scenario.name}：` : ''}${message(error)}`
-        if (error instanceof PendingCase) unavailable.push(reason)
-        else failures.push(reason)
+        failures.push(reason)
       }
     }
     if (failures.length) throw new Error(failures.join('；'))
-    if (unavailable.length) throw new PendingCase(unavailable[0])
     passed++
-    const note = id === 6 ? '核心检查通过，UI 的渲染子图归属仍需界面验收'
-      : id === 8 ? 'class/style/click 的提示规则在第 5 步补验'
-      : id === 18 ? '核心类型及原文检查，渲染和界面只读待界面验收'
-      : id === 19 ? `核心编辑 20 次并撤销 20 次，共 ${times[0].toFixed(1)} ms；拖动待界面验收` : ''
+    const note = number === '06' ? '跨子图边位于最外层 end 后；Mermaid 原生子图归属检查通过'
+      : number === '18' ? '核心类型及原文检查，渲染和界面只读待界面验收'
+      : number === '19' ? `核心编辑 20 次并撤销 20 次，共 ${times[0].toFixed(1)} ms；拖动待界面验收` : ''
     print(`用例 ${number}：通过${note ? `（${note}）` : ''}`)
   } catch (error) {
-    if (error instanceof PendingCase) {
-      pending++
-      print(`用例 ${number}：待实现（${message(error)}）`)
-    } else {
-      failed++
-      const reason = message(error).replace(/\s+/g, ' ')
-      print(`用例 ${number}：失败（${reason.length > 360 ? reason.slice(0, 360) + '…；详见 out/cases/c' + number + '*.check.txt' : reason}）`)
-    }
+    failed++
+    const reason = message(error).replace(/\s+/g, ' ')
+    print(`用例 ${number}：失败（${reason.length > 360 ? reason.slice(0, 360) + '…；详见 out/cases/c' + number + '*.check.txt' : reason}）`)
   }
 }
-print(`合计：通过 ${passed}，失败 ${failed}，待实现 ${pending}；退出码 ${failed}`)
+print(`合计：通过 ${passed}，失败 ${failed}；退出码 ${failed}`)
 writeFileSync(join(output, 'summary.txt'), report.join('\n') + '\n', 'utf8')
 process.exitCode = failed

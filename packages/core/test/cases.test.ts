@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { assertAllowedChanges, lineDiff, rawLines } from '../../../tools/cases/line-diff.mjs'
+import { assertAllowedChanges, assertOnlyReplacesLine, lineDiff, rawLines } from '../../../tools/cases/line-diff.mjs'
 
 describe('用例运行器的字节级行差异检查', () => {
   it('保留 CRLF、空白行、tab、空格和末尾无换行', () => {
@@ -40,5 +40,17 @@ describe('用例运行器的字节级行差异检查', () => {
     expect(() => assertAllowedChanges('甲\n', '甲\n', [
       { line: 3, remove: 0, add: [] },
     ])).toThrow('允许改动的行号重叠或越界')
+  })
+
+  it('语义拆行检查允许原行内不同写法，同时锁住前后所有原文', () => {
+    const before = '头\r\n\t原行  \r\n\t后文  \r\n'
+    expect(() => assertOnlyReplacesLine(before, '头\r\n\t甲; 乙\r\n\t后文  \r\n', 2)).not.toThrow()
+    expect(() => assertOnlyReplacesLine(before, '头\r\n\t甲\r\n\t乙\r\n\t后文  \r\n', 2)).not.toThrow()
+    for (const after of [
+      '改头\r\n\t甲\r\n\t后文  \r\n',
+      '头\r\n\t甲\r\n\t后文\r\n',
+      '头\r\n\t甲;\t后文  \r\n',
+      '头\r\n\t甲\n\t后文  \r\n',
+    ]) expect(() => assertOnlyReplacesLine(before, after, 2)).toThrow()
   })
 })

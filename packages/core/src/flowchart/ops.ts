@@ -17,12 +17,14 @@ export type FlowchartOp =
   | { type: 'setNodeColor'; id: string; prop: 'fill' | 'stroke' | 'color'; value: string | null }
   | { type: 'setEdgeColor'; edgeId: string; value: string | null }
   | { type: 'reverseEdge'; edgeId: string }
+  | { type: 'retargetEdge'; edgeId: string; end: 'source' | 'target'; nodeId: string }
   | { type: 'duplicateNode'; id: string }
 
 export interface OpResult {
   edits: TextEdit[]
   /** entity ids created by this op (e.g. the new node) */
   created?: string[]
+  warnings?: string[]
 }
 
 export interface FlowOpContext {
@@ -194,7 +196,7 @@ function lastRefLine(graph: FlowGraph, ids: string[]): number {
 }
 
 /**
- * Rebuild a chain statement without a node and/or without one specific edge.
+ * Rebuild a chain statement after removing a node/edge or retargeting one edge.
  * Returns replacement line texts ([] = drop the line). Preserves the exact
  * source text of surviving refs and edge segments.
  */
@@ -202,7 +204,11 @@ function rebuildChain(
   ctx: FlowOpContext,
   lineIndex: number,
   chain: ChainStmt,
-  opts: { dropNodeId?: string; dropEdge?: { segIndex: number; source: string; target: string } },
+  opts: {
+    dropNodeId?: string
+    dropEdge?: { segIndex: number; source: string; target: string }
+    retarget?: { edge: FlowEdge; end: 'source' | 'target'; nodeId: string }
+  },
 ): string[] {
   interface Expanded {
     a: NodeRef
@@ -231,7 +237,7 @@ function rebuildChain(
     return true
   })
 
-  if (kept.length === expanded.length && !opts.dropNodeId) return [slice(ctx, chain.span)]
+  if (kept.length === expanded.length && !opts.dropNodeId && !opts.retarget) return [slice(ctx, chain.span)]
 
   const survivors = new Set<NodeRef>()
   for (const e of kept) {
@@ -242,21 +248,27 @@ function rebuildChain(
   // re-chain greedily: A-->B-->C stays one line where the refs connect
   const out: string[] = []
   let current = ''
-  let lastB: NodeRef | null = null
+  let lastB: NodeRef | string | null = null
   for (const e of kept) {
+    const retarget = opts.retarget
+    const changed = retarget && e.segIndex === retarget.edge.segIndex &&
+      e.a === retarget.edge.sourceRef && e.b === retarget.edge.targetRef
+    const a = changed && retarget.end === 'source' ? retarget.nodeId : e.a
+    const b = changed && retarget.end === 'target' ? retarget.nodeId : e.b
+    const refText = (ref: NodeRef | string) => typeof ref === 'string' ? ref : slice(ctx, ref.span)
     const seg = chain.edges[e.segIndex]
     const segStart = seg.idSpan?.start ?? seg.span.start
     const segText = slice(ctx, { start: segStart, end: seg.span.end })
     const sourceGroup = chain.groups[e.segIndex]
     const before = slice(ctx, { start: sourceGroup[sourceGroup.length - 1].span.end, end: segStart })
     const after = slice(ctx, { start: seg.span.end, end: chain.groups[e.segIndex + 1][0].span.start })
-    if (lastB === e.a && current) {
-      current += `${before}${segText}${after}${slice(ctx, e.b.span)}`
+    if (lastB === a && current) {
+      current += `${before}${segText}${after}${refText(b)}`
     } else {
       if (current) out.push(current)
-      current = `${slice(ctx, e.a.span)}${before}${segText}${after}${slice(ctx, e.b.span)}`
+      current = `${refText(a)}${before}${segText}${after}${refText(b)}`
     }
-    lastB = e.b
+    lastB = b
   }
   if (current) out.push(current)
 
@@ -375,7 +387,14 @@ export function compileFlowchartOp(ctx: FlowOpContext, op: FlowchartOp): OpResul
       if (!src || !tgt) return null
       const opStr = edgeOpString(op.line ?? 'solid', op.arrowEnd ?? 'arrow')
       const label = op.label ? `|${printEdgeLabel(op.label)}|` : ''
-      const after = lastRefLine(graph, [op.source, op.target])
+      let after = lastRefLine(graph, [op.source, op.target])
+      if (src.subgraph !== tgt.subgraph) {
+        // A cross-subgraph reference must be outside the enclosing subgraphs,
+        // otherwise Mermaid may move an existing endpoint into that subgraph.
+        for (const subgraph of graph.subgraphs) {
+          if (subgraph.openLine <= after && subgraph.endLine > after) after = subgraph.endLine
+        }
+      }
       const indent = ctx.lines[after].kind === 'statement' ? ctx.lines[after].indent : bodyIndent(ctx)
       const text = `${indent}${op.source} ${opStr}${label} ${op.target}`
       const occ = graph.edges.filter((e) => e.source === op.source && e.target === op.target).length
@@ -489,7 +508,7 @@ export function compileFlowchartOp(ctx: FlowOpContext, op: FlowchartOp): OpResul
     case 'deleteNode': {
       const node = nodeOf(graph, op.id)
       if (!node) return null
-      const edits: TextEdit[] = []
+      const warnings: string[] = []
       const changes: StatementChanges = new Map()
       const chainLines = new Set<number>()
       for (const r of node.refs) chainLines.add(r.lineIndex)
@@ -499,21 +518,53 @@ export function compileFlowchartOp(ctx: FlowOpContext, op: FlowchartOp): OpResul
           changes.set(stmt, rebuildChain(ctx, lineIndex, stmt, { dropNodeId: op.id }))
         }
       }
-      // clean up class/style/click statements that reference the node
+      // Keep user-authored class/style/click statements; report dangling refs.
       for (const stmt of [...graph.statements.values()].flat()) {
-        if (stmt.kind === 'classAssign' && stmt.ids.includes(op.id) && stmt.idsSpan) {
-          const remaining = stmt.ids.filter((i) => i !== op.id)
-          if (remaining.length === 0) changes.set(stmt, [])
-          else edits.push({ start: stmt.idsSpan.start, end: stmt.idsSpan.end, text: remaining.join(',') })
-        } else if ((stmt.kind === 'style' || stmt.kind === 'click') && stmt.ids[0] === op.id) {
-          changes.set(stmt, [])
+        if ((stmt.kind === 'classAssign' || stmt.kind === 'style' || stmt.kind === 'click') && stmt.ids.includes(op.id)) {
+          warnings.push(`「${slice(ctx, stmt.span)}」第 ${stmt.lineIndex + 1} 行还引用着已删除的节点 ${op.id}，请手动处理`)
         } else if (stmt.kind === 'edgeAttrs') {
           const associated = graph.edges.filter((edge) => edge.seg.edgeId === stmt.ids[0])
           if (associated.every((edge) => edge.source === op.id || edge.target === op.id)) changes.set(stmt, [])
         }
       }
       const surviving = graph.edges.filter((edge) => edge.source !== op.id && edge.target !== op.id)
-      return { edits: structuralEdits(ctx, surviving, changes, edits) }
+      return { edits: structuralEdits(ctx, surviving, changes), ...(warnings.length ? { warnings } : {}) }
+    }
+
+    case 'retargetEdge': {
+      const edge = findEdge(graph, op.edgeId)
+      if (!edge || !nodeOf(graph, op.nodeId) || edge[op.end] === op.nodeId) return null
+      const stmt = graph.statements.get(edge.lineIndex)?.[edge.stmtIndex]
+      if (!stmt || stmt.kind !== 'chain') return null
+      const ref = op.end === 'source' ? edge.sourceRef : edge.targetRef
+      const shared = graph.edges.some((other) => other !== edge &&
+        other.lineIndex === edge.lineIndex && other.stmtIndex === edge.stmtIndex &&
+        (other.sourceRef === ref || other.targetRef === ref))
+      const changes: StatementChanges = new Map()
+      const extra: TextEdit[] = []
+      if (shared) {
+        // Expand in the original edge order, then re-chain adjacent surviving
+        // refs. Moving a later fan/chain edge to the top changes linkStyle order.
+        changes.set(stmt, rebuildChain(ctx, edge.lineIndex, stmt, { retarget: { edge, end: op.end, nodeId: op.nodeId } }))
+      } else {
+        const node = nodeOf(graph, ref.id)!
+        const others = node.refs.filter((site) => site.ref !== ref)
+        const preserve = (ref.shape && !others.some((site) => site.ref.shape)) ||
+          (ref.attrsRaw && !others.some((site) => site.ref.attrsRaw === ref.attrsRaw)) ||
+          ref.classNames.some((name) => !others.some((site) => site.ref.classNames.includes(name)))
+        if (preserve) {
+          extra.push(insertLinesBefore(ctx, edge.lineIndex, [ctx.lines[edge.lineIndex].indent + slice(ctx, ref.span)]))
+        }
+        // Decorations belong to the old node, even if another declaration of
+        // that node already exists. Never attach them to the new endpoint.
+        extra.push({ start: ref.span.start, end: ref.span.end, text: op.nodeId })
+      }
+      const before = graph.edges.map((item) => item === edge ? { ...item, [op.end]: op.nodeId } : item)
+      const edits = structuralEdits(ctx, before, changes, extra)
+      const lines = scanLines(applyEdits(ctx.code, edits).text)
+      const { headerIndex } = classifyLines(lines)
+      const created = buildFlowGraph(lines, headerIndex).edges[edge.order].entityId
+      return { edits, created: [created] }
     }
 
     case 'duplicateNode': {

@@ -39,6 +39,23 @@ export interface AllowedChange {
   add: string[]
 }
 
+/** 允许一条原始物理行被任意多行替换；其前后原文及行边界必须字节一致。 */
+export function assertOnlyReplacesLine(before: string, after: string, line: number): void {
+  const lines = rawLines(before)
+  if (line < 1 || line > lines.length) throw new Error('允许改动的行号越界')
+  const prefix = lines.slice(0, line - 1).join('')
+  const suffix = lines.slice(line).join('')
+  if (after.length < prefix.length + suffix.length || !after.startsWith(prefix) || !after.endsWith(suffix)) {
+    throw new Error(`改动超出了原始第 ${line} 行`)
+  }
+  const replacement = after.slice(prefix.length, after.length - suffix.length)
+  const eol = before.includes('\r\n') ? '\r\n' : '\n'
+  if ((replacement && lines[line - 1].endsWith('\n') && !replacement.endsWith(eol)) ||
+    (eol === '\r\n' && /[\r\n]/.test(replacement.replace(/\r\n/g, '')))) {
+    throw new Error('替换内容改变了原始行边界或换行符')
+  }
+}
+
 export function assertAllowedChanges(before: string, after: string, allowed: AllowedChange[]): void {
   const lines = rawLines(before)
   const eol = before.includes('\r\n') ? '\r\n' : '\n'

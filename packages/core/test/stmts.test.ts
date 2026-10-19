@@ -195,11 +195,11 @@ describe('流程图语句和原文保留', () => {
     expect(ed.code).toBe(code)
   })
 
-  it('删除节点时同时处理同一行的多个语句段及其样式', () => {
+  it('删除节点时处理同一行的多个语句段，保留样式并给出提示', () => {
     const code = 'flowchart LR\n  A --> B; B --> C; style B fill:red; linkStyle 0 stroke:red; X --> Y\n  A\n  C\n'
     const ed = new MermaidWysiwygEditor({ code })
-    ed.dispatch({ type: 'deleteNode', id: 'B' })
-    expectUndoRedo(ed, code, code.replace('A --> B; B --> C; style B fill:red; linkStyle 0 stroke:red; ', ''))
+    expect(ed.dispatch({ type: 'deleteNode', id: 'B' })!.warnings).toHaveLength(1)
+    expectUndoRedo(ed, code, code.replace('A --> B; B --> C; ', '').replace('linkStyle 0 stroke:red; ', ''))
   })
 
   it.each(['\n', '\r\n'])('删除末尾无换行的边和属性不留下孤立回车（%j）', (eol) => {
