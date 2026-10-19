@@ -35,3 +35,4 @@
 |25 | 11 | 删掉 A→C（`linkStyle 0` 只有它一个） | 整行 `linkStyle 0 ...` 删掉，其他 linkStyle 序号全部减 1 |
 |26 | 11 | 在 C 和 D 之间（文件中间）新增一条边 | 新边插到中间时，后面所有 linkStyle 序号加 1；如果追加在末尾，序号不变 |
 |27 | 11 | 22–26 每条做完再撤销 | 代码回到原样，字节一致 |
+|28 | 04、11 | 删边 / 拆行 后检查所有 linkStyle 行 | `linkStyle default ...` 原样不动；序号只认 `linkStyle` 后紧跟的那一段，样式部分（如 `stroke:#f00,stroke-width:2px`）逐字节不变 |

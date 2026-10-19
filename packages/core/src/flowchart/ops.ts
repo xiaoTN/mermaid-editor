@@ -1,6 +1,6 @@
 import type { LineInfo, Span, TextEdit } from '../types'
-import { diffText } from '../text'
-import type { FlowGraph, FlowEdge, FlowNode } from './graph'
+import { applyEdits, classifyLines, diffText, scanLines } from '../text'
+import { buildFlowGraph, type FlowGraph, type FlowEdge, type FlowNode } from './graph'
 import { SHAPE_DELIMS, type ChainStmt, type EdgeArrow, type EdgeLine, type FlowStmt, type NodeRef, type ShapeId } from './parse'
 
 export type FlowchartOp =
@@ -285,26 +285,68 @@ function findEdge(graph: FlowGraph, edgeId: string): FlowEdge | null {
   return graph.edges.find((e) => e.entityId === edgeId) ?? null
 }
 
-/**
- * `linkStyle <n>` addresses edges by render order, so structural ops that
- * change edge order must renumber (or drop) the affected statements.
- * `map` returns the new index for an old one, or null to delete the line.
- */
+const LINK_STYLE_INDICES = /^(\s*linkStyle\s+)(\d+(?:\s*,\s*\d+)*)(?=\s)/
+
+/** Only rewrite the numeric list; keep separators and the entire style suffix. */
+function remapLinkStyle(raw: string, map: (index: number) => number | null): string | null {
+  const match = LINK_STYLE_INDICES.exec(raw)
+  // In particular, `linkStyle default` never participates in index remapping.
+  if (!match) return raw
+  const parts = match[2].split(/(\s*,\s*)/)
+  const kept: string[] = []
+  for (let i = 0; i < parts.length; i += 2) {
+    const oldIndex = Number(parts[i])
+    const newIndex = map(oldIndex)
+    if (newIndex === null) continue
+    if (kept.length) kept.push(parts[i - 1])
+    kept.push(newIndex === oldIndex ? parts[i] : String(newIndex))
+  }
+  if (kept.length === 0) return null
+  return match[1] + kept.join('') + raw.slice(match[1].length + match[2].length)
+}
+
+/** Map each list member independently; drop a statement only when none survive. */
 function renumberLinkStyles(ctx: FlowOpContext, map: (index: number) => number | null, changes: StatementChanges = new Map()): StatementChanges {
   for (const stmt of [...ctx.graph.statements.values()].flat()) {
     if (stmt.kind !== 'linkStyle') continue
     const raw = slice(ctx, stmt.span)
-    const m = /^(linkStyle\s+)(\d+)\b/.exec(raw)
-    if (!m) continue
-    const oldIndex = Number(m[2])
-    const newIndex = map(oldIndex)
-    if (newIndex === null) {
-      changes.set(stmt, [])
-    } else if (newIndex !== oldIndex) {
-      changes.set(stmt, [raw.slice(0, m[1].length) + newIndex + raw.slice(m[1].length + m[2].length)])
-    }
+    const text = remapLinkStyle(raw, map)
+    if (text !== raw) changes.set(stmt, text === null ? [] : [text])
   }
   return changes
+}
+
+/**
+ * `before` contains surviving edges with their original order indices. Match
+ * parallel edges by endpoints, explicit id and occurrence, since entity ids
+ * themselves change when an earlier occurrence is deleted. Connect inserts
+ * after both endpoints' last references, hence after all existing parallels.
+ */
+function orderPermutation(before: FlowEdge[], afterCode: string): (index: number) => number | null {
+  const lines = scanLines(afterCode)
+  const { headerIndex } = classifyLines(lines)
+  const after = buildFlowGraph(lines, headerIndex).edges
+  const key = (edge: FlowEdge) => JSON.stringify([edge.source, edge.target, edge.seg.edgeId])
+  const orders = new Map<string, number[]>()
+  for (const edge of after) {
+    const identity = key(edge)
+    const queue = orders.get(identity) ?? []
+    queue.push(edge.order)
+    orders.set(identity, queue)
+  }
+  const permutation = new Map<number, number>()
+  for (const edge of before) {
+    const order = orders.get(key(edge))?.shift()
+    if (order !== undefined) permutation.set(edge.order, order)
+  }
+  return (index) => permutation.get(index) ?? null
+}
+
+/** Reparse the structural edits, then compile styles in the original coordinates. */
+function structuralEdits(ctx: FlowOpContext, before: FlowEdge[], changes: StatementChanges, extra: TextEdit[] = []): TextEdit[] {
+  const afterCode = applyEdits(ctx.code, [...extra, ...statementEdits(ctx, changes)]).text
+  const map = orderPermutation(before, afterCode)
+  return [...extra, ...statementEdits(ctx, renumberLinkStyles(ctx, map, changes))]
 }
 
 function nodeOf(graph: FlowGraph, id: string): FlowNode | null {
@@ -337,13 +379,8 @@ export function compileFlowchartOp(ctx: FlowOpContext, op: FlowchartOp): OpResul
       const indent = ctx.lines[after].kind === 'statement' ? ctx.lines[after].indent : bodyIndent(ctx)
       const text = `${indent}${op.source} ${opStr}${label} ${op.target}`
       const occ = graph.edges.filter((e) => e.source === op.source && e.target === op.target).length
-      // the new edge takes the order index of the first edge on a later line
-      const newOrder = graph.edges.filter((e) => e.lineIndex <= after).length
       return {
-        edits: [
-          insertLinesAfter(ctx, after, [text]),
-          ...statementEdits(ctx, renumberLinkStyles(ctx, (i) => (i >= newOrder ? i + 1 : i))),
-        ],
+        edits: structuralEdits(ctx, graph.edges, new Map(), [insertLinesAfter(ctx, after, [text])]),
         created: [`edge:${op.source}->${op.target}#${occ}`],
       }
     }
@@ -437,7 +474,6 @@ export function compileFlowchartOp(ctx: FlowOpContext, op: FlowchartOp): OpResul
       const texts = rebuildChain(ctx, edge.lineIndex, stmt, {
         dropEdge: { segIndex: edge.segIndex, source: edge.source, target: edge.target },
       })
-      const removed = edge.order
       const changes: StatementChanges = new Map([[stmt, texts]])
       const id = edge.seg.edgeId
       if (id && !graph.edges.some((other) => other !== edge && other.seg.edgeId === id)) {
@@ -446,7 +482,7 @@ export function compileFlowchartOp(ctx: FlowOpContext, op: FlowchartOp): OpResul
         }
       }
       return {
-        edits: statementEdits(ctx, renumberLinkStyles(ctx, (i) => (i === removed ? null : i > removed ? i - 1 : i), changes)),
+        edits: structuralEdits(ctx, graph.edges.filter((other) => other !== edge), changes),
       }
     }
 
@@ -476,17 +512,8 @@ export function compileFlowchartOp(ctx: FlowOpContext, op: FlowchartOp): OpResul
           if (associated.every((edge) => edge.source === op.id || edge.target === op.id)) changes.set(stmt, [])
         }
       }
-      const removedOrders = graph.edges
-        .filter((e) => e.source === op.id || e.target === op.id)
-        .map((e) => e.order)
-        .sort((a, b) => a - b)
-      edits.push(
-        ...statementEdits(ctx, renumberLinkStyles(ctx, (i) => {
-          if (removedOrders.includes(i)) return null
-          return i - removedOrders.filter((r) => r < i).length
-        }, changes)),
-      )
-      return { edits }
+      const surviving = graph.edges.filter((edge) => edge.source !== op.id && edge.target !== op.id)
+      return { edits: structuralEdits(ctx, surviving, changes, edits) }
     }
 
     case 'duplicateNode': {
@@ -560,21 +587,28 @@ export function compileFlowchartOp(ctx: FlowOpContext, op: FlowchartOp): OpResul
       if (!edge) return null
       // linkStyle addresses edges by render index (== document order)
       let linkStmt: FlowStmt | undefined
+      let shared = false
       for (const stmt of [...graph.statements.values()].flat()) {
         if (stmt.kind !== 'linkStyle') continue
-        const m = /^linkStyle\s+(\d+)\b/.exec(slice(ctx, stmt.span))
-        if (m && Number(m[1]) === edge.order) {
+        const match = LINK_STYLE_INDICES.exec(slice(ctx, stmt.span))
+        const indices = match?.[2].split(/\s*,\s*/).map(Number)
+        if (indices?.includes(edge.order)) {
           linkStmt = stmt
+          shared = indices.some((index) => index !== edge.order)
           break
         }
       }
+      const changes: StatementChanges = new Map()
+      if (linkStmt) {
+        const remaining = remapLinkStyle(slice(ctx, linkStmt.span), (index) => index === edge.order ? null : index)
+        changes.set(linkStmt, remaining === null ? [] : [remaining])
+      }
       if (op.value === null) {
-        if (!linkStmt) return { edits: [] }
-        return { edits: statementEdits(ctx, new Map([[linkStmt, []]])) }
+        return { edits: statementEdits(ctx, changes) }
       }
       const text = `linkStyle ${edge.order} stroke:${op.value},stroke-width:2px`
-      if (linkStmt) return { edits: statementEdits(ctx, new Map([[linkStmt, [text]]])) }
-      return { edits: [insertLinesAfter(ctx, graph.lastContentLine, [bodyIndent(ctx) + text])] }
+      if (linkStmt && !shared) return { edits: statementEdits(ctx, new Map([[linkStmt, [text]]])) }
+      return { edits: [...statementEdits(ctx, changes), insertLinesAfter(ctx, graph.lastContentLine, [bodyIndent(ctx) + text])] }
     }
 
     case 'renameSubgraph': {
