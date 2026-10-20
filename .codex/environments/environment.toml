@@ -1,0 +1,10 @@
+version = 1
+name = "mermaid-editor"
+
+[setup]
+script = ""
+
+[[actions]]
+name = "启动编辑器"
+icon = "run"
+command = "npm --prefix apps/playground run dev -- --host 127.0.0.1 --port 5174"
