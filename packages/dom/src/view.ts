@@ -297,9 +297,8 @@ export class MermaidCanvasView {
     this.errorBadge.style.display = 'none'
     this.container.append(this.svgHost, this.overlayHost, this.errorBadge)
     this.popover = new Popover(this.overlayHost)
-    this.gestures = new FlowchartGestures(this.editor, this.container, () => this.readOnly, () => this.updatePopover())
-
     this.notices = mountNotices(this.container, this.editor, () => this.readOnly, options.hintContainer)
+    this.gestures = new FlowchartGestures(this.editor, this.container, () => this.readOnly, () => this.updatePopover(), notices => this.notices.show(notices))
 
     this.mermaid.initialize(this.mermaidConfig)
 
@@ -1590,7 +1589,10 @@ export class MermaidCanvasView {
     }
 
     if (flowchart && id.startsWith('subgraph:')) {
-      return [{ icon: ICONS.pencil, title: t('ui.renameSubgraph'), onClick: () => this.editEntityLabel(id) }]
+      return [
+        { icon: ICONS.pencil, title: t('ui.renameSubgraph'), onClick: () => this.editEntityLabel(id) },
+        { glyph: t('group.ungroup'), title: t('group.ungroup'), danger: true, onClick: () => this.editor.deleteEntities([id]) },
+      ]
     }
 
     if (flowchart && id.startsWith('edge:')) {

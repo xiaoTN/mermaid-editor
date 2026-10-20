@@ -54,6 +54,8 @@ export interface FlowSubgraph {
   openLine: number
   endLine: number
   parent: string | null
+  /** Direction statements owned by this level, excluding nested groups. */
+  directionLines: number[]
 }
 
 export interface FlowGraph {
@@ -155,12 +157,15 @@ export function buildFlowGraph(lines: LineInfo[], headerIndex: number): FlowGrap
           openLine: stmt.lineIndex,
           endLine: -1,
           parent: sgStack.length ? sgStack[sgStack.length - 1].id : null,
+          directionLines: [],
         }
         subgraphs.push(sg)
         sgStack.push(sg)
       } else if (stmt.kind === 'end') {
         const sg = sgStack.pop()
         if (sg) sg.endLine = stmt.lineIndex
+      } else if (stmt.kind === 'direction') {
+        sgStack[sgStack.length - 1]?.directionLines.push(stmt.lineIndex)
       } else if (stmt.kind === 'chain') {
         for (const group of stmt.groups) {
           for (const ref of group) getNode(ref, stmt.lineIndex, stmt.stmtIndex)

@@ -4,9 +4,9 @@ import { buildFlowGraph, type FlowGraph, type FlowEdge, type FlowNode } from './
 import { SHAPE_DELIMS, type ChainStmt, type EdgeArrow, type EdgeLine, type FlowStmt, type NodeRef, type ShapeId } from './parse'
 
 export type FlowchartOp =
-  | { type: 'addNode'; shape?: ShapeId; label?: string; id?: string }
+  | { type: 'addNode'; shape?: ShapeId; label?: string; id?: string; subgraph?: string }
   | { type: 'addSubgraph'; title: string }
-  | { type: 'connect'; source: string; target: string; line?: EdgeLine; arrowEnd?: EdgeArrow; label?: string }
+  | { type: 'connect'; source: string; target: string; line?: EdgeLine; arrowEnd?: EdgeArrow; label?: string; insideGroup?: boolean }
   | { type: 'renameNode'; id: string; label: string }
   | { type: 'setNodeShape'; id: string; shape: ShapeId }
   | { type: 'setEdgeLabel'; edgeId: string; label: string }
@@ -15,6 +15,8 @@ export type FlowchartOp =
   | { type: 'deleteNode'; id: string }
   | { type: 'deleteEdge'; edgeId: string }
   | { type: 'renameSubgraph'; id: string; title: string }
+  | { type: 'ungroup'; id: string }
+  | { type: 'removeSubgraphDirection'; id: string }
   | { type: 'setNodeColor'; id: string; prop: 'fill' | 'stroke' | 'color'; value: string | null }
   | { type: 'setEdgeColor'; edgeId: string; value: string | null }
   | { type: 'reverseEdge'; edgeId: string }
@@ -24,6 +26,8 @@ export type FlowchartOp =
 export interface EditorNotice {
   key: string
   params?: Record<string, string | number>
+  /** No op means undo the transaction which produced this notice. */
+  action?: { key: string; op?: FlowchartOp }
 }
 
 export interface OpResult {
@@ -131,7 +135,7 @@ function deleteLineEdit(ctx: FlowOpContext, lineIndex: number): TextEdit {
 type StatementChanges = Map<FlowStmt, string[]>
 
 /** Replace statement spans; remove adjacent separators only when a statement disappears. */
-function statementEdits(ctx: FlowOpContext, changes: StatementChanges): TextEdit[] {
+function statementEdits(ctx: FlowOpContext, changes: StatementChanges, dropComments = false): TextEdit[] {
   const edits: TextEdit[] = []
   for (const lineIndex of new Set([...changes.keys()].map((stmt) => stmt.lineIndex))) {
     const stmts = ctx.graph.statements.get(lineIndex)!
@@ -139,7 +143,7 @@ function statementEdits(ctx: FlowOpContext, changes: StatementChanges): TextEdit
     if (stmts.every(removed)) {
       const last = ctx.lines[logicalEndLine(ctx, lineIndex)]
       const suffix = ctx.code.slice(stmts[stmts.length - 1].span.end, lineBody(last).end)
-      if (!suffix.trimStart().startsWith('%%')) {
+      if (dropComments || !suffix.trimStart().startsWith('%%')) {
         edits.push(deleteLineEdit(ctx, lineIndex))
         continue
       }
@@ -183,7 +187,7 @@ function slice(ctx: FlowOpContext, span: { start: number; end: number }): string
 }
 
 function generateNodeId(graph: FlowGraph, preferred?: string): string {
-  const existing = new Set(graph.nodes.map((n) => n.id))
+  const existing = new Set([...graph.nodes, ...graph.subgraphs].map((n) => n.id))
   if (preferred && !existing.has(preferred)) return preferred
   const allLetters = graph.nodes.length > 0 && graph.nodes.every((n) => /^[A-Z]$/.test(n.id))
   if (allLetters) {
@@ -434,14 +438,69 @@ function orderPermutation(before: FlowEdge[], afterCode: string): (index: number
 }
 
 /** Reparse the structural edits, then compile styles in the original coordinates. */
-function structuralEdits(ctx: FlowOpContext, before: FlowEdge[], changes: StatementChanges, extra: TextEdit[] = []): TextEdit[] {
-  const afterCode = applyEdits(ctx.code, [...extra, ...statementEdits(ctx, changes)]).text
+function structuralEdits(ctx: FlowOpContext, before: FlowEdge[], changes: StatementChanges, extra: TextEdit[] = [], dropComments = false): TextEdit[] {
+  const afterCode = applyEdits(ctx.code, [...extra, ...statementEdits(ctx, changes, dropComments)]).text
   const map = orderPermutation(before, afterCode)
-  return [...extra, ...statementEdits(ctx, renumberLinkStyles(ctx, map, changes))]
+  return [...extra, ...statementEdits(ctx, renumberLinkStyles(ctx, map, changes), dropComments)]
 }
 
 function nodeOf(graph: FlowGraph, id: string): FlowNode | null {
   return graph.nodeById.get(id) ?? null
+}
+
+/** Only a unique, closed source group is safe to change. */
+function exactGroup(graph: FlowGraph, id: string) {
+  const groups = graph.subgraphs.filter(group => group.id === id)
+  return groups.length === 1 && groups[0].endLine > groups[0].openLine ? groups[0] : null
+}
+
+function ungroup(ctx: FlowOpContext, id: string): OpResult | null {
+  const group = exactGroup(ctx.graph, id)
+  if (!group) return null
+  // First dedent the retained body, then compile removals in those coordinates.
+  // A single resulting edit keeps the entire operation in one undo transaction.
+  const base = ctx.lines[group.openLine].indent
+  const body = ctx.lines.slice(group.openLine + 1, group.endLine)
+  const indents = body.filter(line => line.kind === 'statement' && line.text.trim() && line.indent.startsWith(base))
+    .map(line => line.indent.slice(base.length)).sort((a, b) => a.length - b.length)
+  const unit = indents[0] ?? ''
+  const dedents = unit ? body.filter(line => line.indent.startsWith(base + unit)).map(line => ({
+    start: line.start + base.length, end: line.start + base.length + unit.length, text: '',
+  })) : []
+  const code = applyEdits(ctx.code, dedents).text
+  const lines = scanLines(code)
+  const { headerIndex } = classifyLines(lines)
+  const graph = buildFlowGraph(lines, headerIndex)
+  const work = { code, lines, graph }
+  const selected = exactGroup(graph, id)!
+  const changes: StatementChanges = new Map()
+  for (const stmts of graph.statements.values()) for (const stmt of stmts) {
+    if ((stmt.kind === 'subgraphOpen' && stmt.lineIndex === selected.openLine) ||
+      (stmt.kind === 'end' && stmt.lineIndex === selected.endLine) ||
+      (stmt.kind === 'direction' && selected.directionLines.includes(stmt.lineIndex)) ||
+      (stmt.kind === 'style' && stmt.ids[0] === id)) {
+      changes.set(stmt, [])
+    } else if (stmt.kind === 'chain' && stmt.groups.some(refs => refs.some(ref => ref.id === id))) {
+      changes.set(stmt, rebuildChain(work, stmt.lineIndex, stmt, { dropNodeId: id }))
+    } else if (stmt.kind === 'classAssign' && stmt.ids.includes(id) && stmt.idsSpan) {
+      const parts = slice(work, stmt.idsSpan).split(',')
+      const kept = parts.filter(part => part.trim() !== id)
+      const raw = slice(work, stmt.span)
+      changes.set(stmt, kept.length ? [raw.slice(0, stmt.idsSpan.start - stmt.span.start) + kept.join(',') +
+        raw.slice(stmt.idsSpan.end - stmt.span.start)] : [])
+    } else if (stmt.kind === 'edgeAttrs') {
+      const edges = graph.edges.filter(edge => edge.seg.edgeId === stmt.ids[0])
+      if (edges.length && edges.every(edge => edge.source === id || edge.target === id)) changes.set(stmt, [])
+    }
+  }
+  const surviving = graph.edges.filter(edge => edge.source !== id && edge.target !== id)
+  const after = applyEdits(code, structuralEdits(work, surviving, changes, [], true)).text
+  const edit = diffText(ctx.code, after)
+  const n = graph.edges.length - surviving.length
+  return { edits: edit ? [edit] : [], warnings: [{
+    key: n ? 'toast.ungroupedEdges' : 'toast.ungrouped', params: { name: group.title ?? id, n },
+    action: { key: 'toast.undo' },
+  }] }
 }
 
 // ---------- compiler ----------
@@ -459,12 +518,16 @@ export function compileFlowchartOp(ctx: FlowOpContext, op: FlowchartOp): OpResul
       ])], created: [`subgraph:${id}`] }
     }
     case 'addNode': {
+      const group = op.subgraph ? exactGroup(graph, op.subgraph) : null
+      if (op.subgraph && !group) return null
       const id = generateNodeId(graph, op.id)
       const shape = op.shape ?? 'rect'
       const label = op.label ?? id
       const { open, close } = SHAPE_DELIMS[shape]
-      const text = `${bodyIndent(ctx)}${id}${open}${printLabel(label, false)}${close}`
-      const edit = insertLinesAfter(ctx, graph.lastContentLine, [text])
+      const indent = group ? ctx.lines[group.openLine + 1]?.indent.length > ctx.lines[group.openLine].indent.length
+        ? ctx.lines[group.openLine + 1].indent : ctx.lines[group.openLine].indent + '  ' : bodyIndent(ctx)
+      const text = `${indent}${id}${open}${printLabel(label, false)}${close}`
+      const edit = group ? insertLinesBefore(ctx, group.endLine, [text]) : insertLinesAfter(ctx, graph.lastContentLine, [text])
       return { edits: [edit], created: [`node:${id}`] }
     }
 
@@ -481,7 +544,13 @@ export function compileFlowchartOp(ctx: FlowOpContext, op: FlowchartOp): OpResul
       const opStr = edgeOpString(line, arrowEnd)
       const label = op.label ? `|${printEdgeLabel(op.label)}|` : ''
       let after = lastRefLine(graph, [op.source, op.target])
-      if (src.subgraph !== tgt.subgraph) {
+      // Canvas drags explicitly request the common group's scope, even when
+      // later references to its nodes appear outside it. Keep API placement stable.
+      const shared = op.insideGroup && src.subgraph === tgt.subgraph && src.subgraph ? exactGroup(graph, src.subgraph) : null
+      if (shared) {
+        after = Math.max(shared.openLine, ...[...src.refs, ...tgt.refs]
+          .filter(ref => ref.lineIndex > shared.openLine && ref.lineIndex < shared.endLine).map(ref => ref.lineIndex))
+      } else if (src.subgraph !== tgt.subgraph) {
         // A cross-subgraph reference must be outside the enclosing subgraphs,
         // otherwise Mermaid may move an existing endpoint into that subgraph.
         for (const subgraph of graph.subgraphs) {
@@ -785,6 +854,16 @@ export function compileFlowchartOp(ctx: FlowOpContext, op: FlowchartOp): OpResul
       const stmt = graph.statements.get(sg.openLine)?.find((item) => item.kind === 'subgraphOpen' && item.id === sg.id)
       const at = stmt?.span.end ?? lineBody(line).end
       return { edits: [{ start: at, end: at, text: ` [${op.title.replace(/[\]"]/g, '')}]` }] }
+    }
+    case 'ungroup': return ungroup(ctx, op.id)
+    case 'removeSubgraphDirection': {
+      const group = exactGroup(graph, op.id)
+      if (!group) return null
+      const changes: StatementChanges = new Map()
+      for (const index of group.directionLines) for (const stmt of graph.statements.get(index) ?? []) {
+        if (stmt.kind === 'direction') changes.set(stmt, [])
+      }
+      return { edits: statementEdits(ctx, changes, true) }
     }
   }
 }

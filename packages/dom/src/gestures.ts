@@ -1,5 +1,5 @@
 import { t, onLocaleChange } from './i18n'
-import { MermaidWysiwygEditor, diffText } from '@inkeep/mermaid-wysiwyg-core'
+import { MermaidWysiwygEditor, diffText, type EditorNotice } from '@inkeep/mermaid-wysiwyg-core'
 
 /** Flowchart chrome is separate from Mermaid's SVG so its original IDs survive. */
 export class FlowchartGestures {
@@ -13,7 +13,7 @@ export class FlowchartGestures {
   private disposers: (() => void)[] = []
 
   constructor(private editor: MermaidWysiwygEditor, private host: HTMLElement,
-    private readonly: () => boolean, private refresh: () => void) {
+    private readonly: () => boolean, private refresh: () => void, private notify: (notices: EditorNotice[]) => void) {
     this.ports.className = 'mw-ports'
     this.ends.className = 'mw-endpoints'
     this.hint.className = 'mw-connect-hint'
@@ -135,19 +135,39 @@ export class FlowchartGestures {
     if (!this.drag || e.pointerId !== this.drag.pointerId) return
     this.move(e)
     const drag = this.drag, target = this.target?.getAttribute('data-mw-entity')?.slice(5)
+    const hit = document.elementFromPoint(e.clientX, e.clientY)
+    const cluster = hit?.closest('[data-mw-entity^="subgraph:"]')
+    const subgraph = cluster && this.host.contains(cluster) ? cluster.getAttribute('data-mw-entity')!.slice(9) : undefined
     this.cancel()
     if (this.readonly()) return
     if (drag.edgeId && target) {
       this.editor.dispatch({ type: 'retargetEdge', edgeId: drag.edgeId, end: drag.end!, nodeId: target })
     } else if (drag.source && target && target !== drag.source) {
-      this.editor.dispatch({ type: 'connect', source: drag.source, target })
+      const result = this.editor.dispatch({ type: 'connect', source: drag.source, target, insideGroup: true })
+      if (result?.edits.length) this.directionNotice(drag.source, target)
     } else if (drag.source && !target) {
-      this.newNodeMenu(drag.source, e.clientX, e.clientY)
+      this.newNodeMenu(drag.source, e.clientX, e.clientY, subgraph)
     }
     this.refresh()
   }
 
-  private newNodeMenu(source: string, x: number, y: number) {
+  private directionNotice(source: string, target: string) {
+    const graph = this.editor.result.flowchart
+    if (!graph) return
+    const groups = (id: string) => {
+      const ids = new Set<string>()
+      let group = graph.nodeById.get(id)?.subgraph
+      while (group && !ids.has(group)) { ids.add(group); group = graph.subgraphs.find(sg => sg.id === group)?.parent }
+      return ids
+    }
+    const from = groups(source), to = groups(target)
+    const notices = graph.subgraphs.filter(group => group.directionLines.length && from.has(group.id) !== to.has(group.id))
+      .map(group => ({ key: 'toast.directionClip', params: { name: group.title ?? group.id },
+        action: { key: 'toast.removeDirection', op: { type: 'removeSubgraphDirection' as const, id: group.id } } }))
+    if (notices.length) this.notify(notices)
+  }
+
+  private newNodeMenu(source: string, x: number, y: number, subgraph?: string) {
     this.host.querySelector('.mw-new-node-menu')?.remove()
     const menu = document.createElement('div'); menu.className = 'mw-plus-menu mw-new-node-menu'
     const b = document.createElement('button'); b.textContent = t('drag.newNode'); b.setAttribute('aria-label', t('drag.newNode'))
@@ -165,12 +185,13 @@ export class FlowchartGestures {
       // Compile both semantic operations against a temporary projection. Their
       // contiguous insertion is applied as one TextEdit and one undo entry.
       const draft = new MermaidWysiwygEditor({ code: this.editor.code })
-      const node = draft.dispatch({ type: 'addNode', label: t('drag.newNode') })?.created?.[0]?.slice(5)
+      const node = draft.dispatch({ type: 'addNode', label: t('drag.newNode'), subgraph })?.created?.[0]?.slice(5)
       if (!node) return
-      const edge = draft.dispatch({ type: 'connect', source, target: node })?.created
+      const edge = draft.dispatch({ type: 'connect', source, target: node, insideGroup: true })?.created
       const edit = diffText(this.editor.code, draft.code)
       if (edit) this.editor.applyEdits([edit], 'canvas')
       if (edge) this.editor.setSelection(edge, 'canvas')
+      if (edit && edge) this.directionNotice(source, node)
     }
     this.host.append(menu)
     const close = (e: Event) => { if (!menu.contains(e.target as Node)) { menu.remove(); document.removeEventListener('pointerdown', close) } }

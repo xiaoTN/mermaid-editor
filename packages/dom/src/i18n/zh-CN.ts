@@ -171,4 +171,10 @@ export default {
   'err.save': "保存失败，内容还在，请重试：{reason}",
   'menu.cancel': "取消",
   'app.canvas': "画布",
+  'group.ungroup': '解散分组',
+  'toast.undo': '撤销',
+  'toast.ungrouped': '已解散分组「{name}」，组内内容已保留',
+  'toast.ungroupedEdges': '已解散分组「{name}」，同时删除了 {n} 条连到该分组的线',
+  'toast.directionClip': '分组「{name}」设置了排列方向，连进组内的线只会画到分组边框。',
+  'toast.removeDirection': '去掉方向设置',
 } satisfies Record<keyof typeof en, string>

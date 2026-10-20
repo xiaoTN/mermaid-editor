@@ -333,6 +333,7 @@ export class MermaidWysiwygEditor {
       if (!this.entityExists(id)) continue
       if (id.startsWith('edge:')) this.dispatch({ type: 'deleteEdge', edgeId: id }, origin)
       else if (id.startsWith('node:')) this.dispatch({ type: 'deleteNode', id: id.slice(5) }, origin)
+      else if (id.startsWith('subgraph:')) this.dispatch({ type: 'ungroup', id: id.slice(9) }, origin)
       else if (id.startsWith('event:')) this.dispatch({ type: 'seq.deleteEvent', eventId: id }, origin)
       else if (id.startsWith('participant:')) {
         this.dispatch({ type: 'seq.deleteParticipant', id: id.slice(12) }, origin)

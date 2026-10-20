@@ -13,6 +13,7 @@ import { DraftStore, draftKey, hashContent, type DraftStorage } from '../../apps
 import { JSDOM } from '../../packages/dom/node_modules/jsdom/lib/api.js'
 import { createDomCases } from './dom-cases.mts'
 import { createApplicationCases } from './application-cases.mts'
+import { createStep6eCases } from './step6e-cases.mts'
 
 // 仅写入仓库根目录的 out/cases；testdata 中的样例、规则和校验器始终只读。
 const root = fileURLToPath(new URL('../../', import.meta.url))
@@ -667,6 +668,14 @@ try {
       check(expectedCaseNumbers.has(number), `最新 CASES.md 缺少用例 ${number}`)
       for (const locale of ['zh-CN', 'en'] as const) { setLocale(locale); await run(dom.window.document) }
       passed++; print(`用例 ${number}：通过（${note}；高亮线、菜单及实际拖动观感：界面验）`)
+    } catch (error) { failed++; print(`用例 ${number}：失败（${message(error)}）`) }
+  }
+  // The supplied CASES.md currently ends at 61. Step 6e explicitly requests
+  // 70–76 and the final drag rules; keep their executable coverage here.
+  for (const [number, note, run] of await createStep6eCases(root, dom.window.document)) {
+    try {
+      for (const locale of ['zh-CN', 'en'] as const) { setLocale(locale); await run(dom.window.document) }
+      passed++; print(`用例 ${number}：通过（${note}）`)
     } catch (error) { failed++; print(`用例 ${number}：失败（${message(error)}）`) }
   }
 } finally { dom.window.close() }

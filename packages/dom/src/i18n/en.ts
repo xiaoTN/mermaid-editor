@@ -169,4 +169,10 @@ export default {
   'err.save': "Save failed, your changes are kept. Try again: {reason}",
   'menu.cancel': "Cancel",
   'app.canvas': "Canvas",
+  'group.ungroup': 'Ungroup',
+  'toast.undo': 'Undo',
+  'toast.ungrouped': 'Group "{name}" removed, contents kept',
+  'toast.ungroupedEdges': 'Group "{name}" removed, along with {n} lines connected to it',
+  'toast.directionClip': 'Group "{name}" has its own direction, so lines into it stop at its border.',
+  'toast.removeDirection': 'Remove direction',
 } as const

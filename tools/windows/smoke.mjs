@@ -12,7 +12,10 @@ const exe = join(root, 'dist/mermaid-editor.exe')
 const data = join(root, 'out', `windows-smoke-${Date.now()}`)
 const port = 19264
 await mkdir(data, { recursive: true })
-const env = { ...process.env, LOCALAPPDATA: data, WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${port}` }
+// Keep restart checks on one isolated profile even if another QA copy holds
+// the global app mutex and the shell would otherwise choose per-process data.
+const env = { ...process.env, LOCALAPPDATA: data, WEBVIEW2_USER_DATA_FOLDER: join(data, 'WebView2'),
+  WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${port}` }
 let child, socket, next = 0
 const pending = new Map()
 function check(name) { console.log(`通过：${name}`) }

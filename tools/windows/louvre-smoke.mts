@@ -119,6 +119,74 @@ try {
     }
     console.log(`通过：${pair}，真实 exe 的选中/高亮/滚动/删除/线型/起终点/撤销`)
   }
+  const originalGroups = await evaluate(`Array.from(document.querySelectorAll('g.cluster')).map(el => el.id.replace(document.querySelector('.canvas svg').id+'-','')).sort()`)
+  const originalNodes = await evaluate(`Array.from(document.querySelectorAll('g.node')).map(el => el.id.replace(document.querySelector('.canvas svg').id+'-flowchart-','').replace(/-\\d+$/,'')).sort()`)
+  for (const [id, action, count] of [['decor', 'menu', 34], ['orch', 'key', 37]] as const) {
+    await waitUntil(() => evaluate(`!!document.querySelector('[data-mw-entity="subgraph:${id}"] .cluster-label')`), '解散前分组对应')
+    await evaluate(`document.querySelector('[data-mw-entity="subgraph:${id}"] .cluster-label').dispatchEvent(new MouseEvent('click',{bubbles:true}))`)
+    assert(await evaluate(`!!document.querySelector('[aria-label="解散分组"]')`))
+    if (action === 'menu') await click('解散分组')
+    else await evaluate(`document.querySelector('.canvas').dispatchEvent(new KeyboardEvent('keydown',{key:'Delete',bubbles:true}))`)
+    const after = await copiedCode()
+    const expected = new MermaidWysiwygEditor({ code })
+    expected.dispatch({ type: 'ungroup', id })
+    assert.equal(after, expected.code)
+    await waitUntil(() => evaluate(`document.querySelectorAll('g.cluster').length === 2 && document.querySelectorAll('path.flowchart-link').length === ${count}`), '解散后真实 Mermaid 重绘')
+    assert.deepEqual(await evaluate(`Array.from(document.querySelectorAll('g.cluster')).map(el => el.id.replace(document.querySelector('.canvas svg').id+'-','')).sort()`), originalGroups.filter((group: string) => group !== id))
+    assert.deepEqual(await evaluate(`Array.from(document.querySelectorAll('g.node')).map(el => el.id.replace(document.querySelector('.canvas svg').id+'-flowchart-','').replace(/-\\d+$/,'')).sort()`), originalNodes)
+    assert.equal(await evaluate(`document.querySelector('.mw-toast span')?.textContent`), id === 'decor'
+      ? '已解散分组「自动装饰」，同时删除了 3 条连到该分组的线' : '已解散分组「Louvre 场景编排」，组内内容已保留')
+    await evaluate(`document.querySelector('.mw-toast button[aria-label="撤销"]').click()`)
+    assert.equal(await copiedCode(), code)
+    await waitUntil(() => evaluate(`document.querySelectorAll('g.cluster').length === 3 && document.querySelectorAll('path.flowchart-link').length === 37`), '一步撤销恢复分组 SVG')
+    console.log(`通过：真实 exe 解散 ${id}，只去一层、无新增节点/分组、提示、按钮撤销及原始字节`)
+  }
+  async function dragNew(source: string, target: string) {
+    return evaluate(`(() => {
+      const source=document.querySelector('[data-mw-entity="node:${source}"]');
+      source.dispatchEvent(new PointerEvent('pointerover',{bubbles:true}));
+      const target=document.querySelector(${JSON.stringify(target)}), original=document.elementFromPoint;
+      document.elementFromPoint=()=>target;
+      try {
+        document.querySelector('.mw-ports button').dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,button:0,pointerId:1}));
+        document.dispatchEvent(new PointerEvent('pointermove',{bubbles:true,clientX:90,pointerId:1}));
+        const highlighted=!!target.closest('[data-mw-entity^="node:"]')?.classList.contains('mw-connect-target');
+        document.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,clientX:90,pointerId:1}));
+        return highlighted;
+      } finally { document.elementFromPoint=original; }
+    })()`)
+  }
+  for (const [source, target, clips] of [['goods','floor',true],['floor','output',true],['select','result',false]] as const) {
+    const highlighted = await dragNew(source, `[data-mw-entity="node:${target}"] .label`)
+    assert(highlighted)
+    const connected = await copiedCode()
+    const updated = new MermaidWysiwygEditor({ code: connected }).result.flowchart!
+    assert.equal(updated.edges.length, 38)
+    assert(updated.edges.some(edge => edge.source === source && edge.target === target))
+    assert.equal(await evaluate(`!!document.querySelector('.mw-new-node-menu')`), false)
+    if (clips) {
+      assert.equal(await evaluate(`document.querySelector('.mw-toast span')?.textContent`), '分组「自动装饰」设置了排列方向，连进组内的线只会画到分组边框。')
+      await click('去掉方向设置')
+      assert.equal(await copiedCode(), connected.replace('            direction LR\n',''))
+      await waitUntil(() => evaluate(`document.querySelectorAll('path.flowchart-link').length === 38 && !document.querySelector('.sync-status.error')`), '去方向后真实 SVG')
+      await click('撤销'); assert.equal(await copiedCode(), connected)
+    } else assert.equal(await evaluate(`document.querySelector('.mw-toast')?.textContent`), '')
+    await click('撤销'); assert.equal(await copiedCode(), code)
+    await waitUntil(() => evaluate(`document.querySelectorAll('path.flowchart-link').length === 37`), '拖线撤销原图')
+    console.log(`通过：真实 exe ${source}→${target}，节点优先/蓝边、方向提示与移除/撤销`)
+  }
+  for (const target of ['rect', '.cluster-label']) {
+    assert.equal(await dragNew('goods', `[data-mw-entity="subgraph:decor"] ${target}`), false)
+    assert(await evaluate(`!!document.querySelector('.mw-new-node-menu')`))
+    assert.equal(await copiedCode(), code)
+    await click('新建节点')
+    const after = await copiedCode(), graph = new MermaidWysiwygEditor({ code: after }).result.flowchart!
+    assert.equal(graph.nodes.find(node => node.label === '新建节点')?.subgraph, 'decor')
+    await waitUntil(() => evaluate(`document.querySelectorAll('g.node').length === ${originalNodes.length + 1}`), '新节点在分组内真实渲染')
+    await click('撤销'); assert.equal(await copiedCode(), code)
+    await waitUntil(() => evaluate(`document.querySelectorAll('path.flowchart-link').length === 37`), '新节点撤销原图')
+  }
+  console.log('通过：真实 exe 落在分组空白/标题均弹出新节点菜单，节点建在该组，一步撤销')
   assert.equal(await readFile(path, 'utf8'), code)
   console.log(`Louvre 桌面验收全部通过；截图：${output}`)
 } finally {
