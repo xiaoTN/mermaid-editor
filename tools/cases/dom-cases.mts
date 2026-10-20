@@ -3,9 +3,10 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { MermaidWysiwygEditor, bindTextPane, type FlowEdge, type Span } from '../../packages/core/src/index.js'
 import { correlateFlowchart } from '../../packages/dom/src/correlate.js'
+import { MermaidCanvasView, t } from '../../packages/dom/src/index.js'
 import { assertOnlyReplacesLine } from './line-diff.mjs'
 
-export function createDomCases(directory: string): [string, string, (document: Document) => void][] {
+export function createDomCases(directory: string): [string, string, (document: Document) => void | Promise<void>][] {
   const fixture = (name: string, ext: string) => readFileSync(join(directory, `${name}.${ext}`), 'utf8')
   const typical = ['entry->layout', 'goods->decor', 'decor->assembly', 'select->floor', 'floor->result', 'primary->ai']
   const signature = (edge: FlowEdge) => ({ source: edge.source, target: edge.target, label: edge.label,
@@ -84,6 +85,20 @@ export function createDomCases(directory: string): [string, string, (document: D
     }
   }
 
+  async function setupCanvas(document: Document, name: string) {
+    const code = fixture(name, 'mmd')
+    const editor = new MermaidWysiwygEditor({ code })
+    const host = document.createElement('div')
+    document.body.append(host)
+    const view = new MermaidCanvasView({ editor, container: host, debounceMs: 10000,
+      mermaid: { initialize() {}, async parse() {}, async render() { return { svg: fixture(name, 'svg') } } } })
+    await view.render()
+    assert.equal(view.renderError, null)
+    const click = (el: Element) => el.dispatchEvent(new document.defaultView!.MouseEvent('click', { bubbles: true }))
+    const key = (el: Element, key: string) => el.dispatchEvent(new document.defaultView!.KeyboardEvent('keydown', { key, bubbles: true }))
+    return { code, editor, host, view, click, key, destroy() { view.destroy(); host.remove() } }
+  }
+
   return [
     ['46a', '真实 SVG：六条典型边分别删除，范围与撤销字节校验', document => typicalOperations(document, ['delete'])],
     ['46b', '真实 SVG：六条边分别改颜色、线型，linkStyle 指向正确', document => typicalOperations(document, ['color', 'style'])],
@@ -151,6 +166,63 @@ export function createDomCases(directory: string): [string, string, (document: D
       assert.deepEqual(editor.result.flowchart!.edges.map(signature), graph.edges.filter(e => e !== edge).map(signature))
       assert.equal(editor.code, code.replace('  甲 e1@-->|自定义| 丙\n', '  丙\n').replace('linkStyle 0,2 ', 'linkStyle 0 '))
       roundTrip(editor, code)
+    }],
+    ['57', '真实 SVG：点击 b_a 删除，仅删除 b_a，保留 a、a→c 和分组', async document => {
+      const canvas = await setupCanvas(document, 'node-boundaries')
+      const { code, editor, host, click, key } = canvas
+      try {
+        const node = [...host.querySelectorAll('g.node')].find(el => el.textContent === '节点b_a')!
+        click(node)
+        assert.deepEqual(editor.selection, ['node:b_a'])
+        assert(node.classList.contains('mw-selected'))
+        key(host, 'Delete')
+        assert.equal(editor.code, code.replace('    b_a["节点b_a"]\n', ''))
+        roundTrip(editor, code)
+      } finally { canvas.destroy() }
+    }],
+    ['58', '真实 SVG：render/other、m、end、s/s2 各自点击改名，仅替换该组标题', async document => {
+      for (const id of ['render', 'other', 'm', 'end', 's', 's2']) {
+        const canvas = await setupCanvas(document, 'cluster-boundaries')
+        const { code, editor, host, click, key } = canvas
+        try {
+          const svg = host.querySelector('svg')!
+          const cluster = [...svg.querySelectorAll('g.cluster')].find(el => el.id === `${svg.id}-${id}`)!
+          click(cluster.querySelector('.cluster-label')!)
+          assert.deepEqual(editor.selection, [`subgraph:${id}`])
+          key(host, 'Enter')
+          const input = host.querySelector<HTMLElement>('[contenteditable="true"]')!
+          assert(input, '选中分组后 Enter 必须打开改名输入框')
+          input.textContent = 'XYZ'
+          key(input, 'Enter')
+          const title = new RegExp(`(subgraph ${id}\\[")[^"]*("\\])`)
+          assert.equal(editor.code, code.replace(title, '$1XYZ$2'))
+          roundTrip(editor, code)
+        } finally { canvas.destroy() }
+      }
+    }],
+    ['59', '真实 SVG：边 id 撞车时路径/标签/宽命中区均不可选，提示 canvas.ambiguous，字节和历史不变', async document => {
+      const canvas = await setupCanvas(document, 'edge-collision')
+      const { code, editor, host, click, key } = canvas
+      try {
+        const paths = [...host.querySelectorAll('path.flowchart-link[data-id="L_a_b_c_0"]')]
+        assert.equal(paths.length, 2, '真实 Mermaid 必须产生两条同 id 的边')
+        const targets = [...paths,
+          ...host.querySelectorAll('.edgeLabel .label[data-id="L_a_b_c_0"]'),
+          ...host.querySelectorAll('.mw-edge-hit[data-mw-ambiguous]')]
+        assert.equal(targets.length, 6)
+        for (const target of targets) {
+          click(host.querySelector('path.flowchart-link[data-id="L_x_y_0"]')!)
+          assert.deepEqual(editor.selection, ['edge:x->y#0'])
+          click(target)
+          assert.deepEqual(editor.selection, [])
+          assert.equal(host.querySelector('.mw-toast')?.textContent, t('canvas.ambiguous'))
+          assert(!target.hasAttribute('data-mw-entity'))
+          key(host, 'Delete'); key(host, 'Enter')
+          assert.equal(editor.code, code)
+          assert.equal(editor.canUndo, false)
+          assert.equal(host.querySelector('[contenteditable="true"]'), null)
+        }
+      } finally { canvas.destroy() }
     }],
   ]
 }

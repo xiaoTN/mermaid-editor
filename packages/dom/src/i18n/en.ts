@@ -29,6 +29,7 @@ export default {
   'edge.label': "Label",
   'edge.delete': "Delete",
   'toast.dupEdge': "That connection already exists",
+  'canvas.ambiguous': "This item cannot be edited directly on the canvas. Please edit the code.",
   'toast.nodeHasStyle': "Style lines for this node were kept",
   'toast.readonly': "This diagram type is view-only for now",
   'toast.copied': "Code copied",

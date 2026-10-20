@@ -36,11 +36,11 @@ function makeFakeMermaid() {
       const nodes = [...code.matchAll(/(\w+)\[([^\]]*)\]/g)]
       const edges = [...code.matchAll(/(\w+)\[[^\]]*\]\s*-->\s*(\w+)/g)]
       const svg = [
-        '<svg xmlns="http://www.w3.org/2000/svg">',
+        '<svg id="fixture" xmlns="http://www.w3.org/2000/svg">',
         '<g class="nodes">',
         ...nodes.map(
           ([, id, label], i) =>
-            `<g class="node" id="flowchart-${id}-${i}"><g class="label"><foreignObject width="80" height="24">` +
+            `<g class="node" id="fixture-flowchart-${id}-${i}"><g class="label"><foreignObject width="80" height="24">` +
             `<div xmlns="http://www.w3.org/1999/xhtml"><span class="nodeLabel"><p>${label}</p></span></div>` +
             `</foreignObject></g></g>`,
         ),

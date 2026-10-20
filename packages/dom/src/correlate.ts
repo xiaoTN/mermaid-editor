@@ -21,10 +21,81 @@ function esc(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
+function edgeIdentity(svg: SVGSVGElement, el: SVGElement): string | null {
+  const id = el.getAttribute('data-id')
+  if (id) return !el.id || el.id === id || el.id === `${svg.id}-${id}` ? id : null
+  return svg.id && el.id.startsWith(`${svg.id}-`) ? el.id.slice(svg.id.length + 1) : el.id
+}
+
+/** Claim only one-to-one identities, never the first candidate or paint order. */
+function matchNodes<T extends { entityId: string }>(
+  entities: T[], elements: SVGGElement[], matches: (entity: T, el: SVGGElement) => boolean,
+  nodes: Map<string, SVGGElement>, failed: string[],
+) {
+  const candidates = entities.map(entity => elements.filter(el => matches(entity, el)))
+  entities.forEach((entity, i) => {
+    const [el] = candidates[i]
+    if (candidates[i].length !== 1 || candidates.filter(els => els.includes(el)).length !== 1) {
+      failed.push(entity.entityId)
+      return
+    }
+    nodes.set(entity.entityId, el)
+    el.setAttribute('data-mw-entity', entity.entityId)
+  })
+}
+
+/** Keep failed hit areas distinct from both the background and parent groups. */
+function markUncorrelated(svg: SVGSVGElement) {
+  for (const el of svg.querySelectorAll<SVGElement>(
+    'g.node, g.cluster, g.statediagram-state, g.statediagram-cluster, .edgePaths > path, path.flowchart-link, path.transition, path.relation, path.relationshipLine, .edgeLabels > .edgeLabel, .relationshipLabel',
+  )) {
+    if (el.hasAttribute('data-mw-entity')) continue
+    el.setAttribute('data-mw-ambiguous', '')
+    el.style.pointerEvents = 'auto'
+  }
+}
+
+/** Endpoint identities plus Mermaid's numeric suffix resolve parallel edges. */
+function matchRelations<T extends { entityId: string; source: string; target: string }>(
+  svg: SVGSVGElement, relations: T[], prefix: (relation: T) => string | null,
+  edges: Map<string, SVGElement>, edgeLabels: Map<string, SVGGElement>, failed: string[],
+) {
+  const paths = [...svg.querySelectorAll<SVGElement>('.edgePaths > path')]
+  const labels = [...svg.querySelectorAll<SVGGElement>('.edgeLabels > .edgeLabel')]
+  const groups = new Map<string, T[]>()
+  for (const relation of relations) {
+    const pair = JSON.stringify([relation.source, relation.target])
+    const group = groups.get(pair) ?? []
+    group.push(relation)
+    groups.set(pair, group)
+  }
+  for (const group of groups.values()) {
+    const key = prefix(group[0])
+    if (!key || [...groups.values()].some(other => other !== group && prefix(other[0]) === key)) continue
+    const re = new RegExp(`^${esc(key)}(\\d+)$`)
+    const candidates = paths.flatMap(el => {
+      const id = edgeIdentity(svg, el) ?? ''
+      const match = re.exec(id)
+      return match && el.id === `${svg.id}-${id}` ? [{ el, id, order: Number(match[1]) }] : []
+    }).sort((a, b) => a.order - b.order)
+    if (candidates.length !== group.length || new Set(candidates.map(c => c.order)).size !== candidates.length) continue
+    group.forEach((relation, i) => {
+      const { el, id } = candidates[i]
+      edges.set(relation.entityId, el)
+      el.setAttribute('data-mw-entity', relation.entityId)
+      const matchingLabels = labels.filter(label => [...label.querySelectorAll('[data-id]')].some(child => child.getAttribute('data-id') === id))
+      if (matchingLabels.length !== 1) return
+      edgeLabels.set(relation.entityId, matchingLabels[0])
+      matchingLabels[0].setAttribute('data-mw-entity', relation.entityId)
+    })
+  }
+  for (const relation of relations) if (!edges.has(relation.entityId)) failed.push(relation.entityId)
+}
+
 /**
  * Correlate mermaid's rendered flowchart SVG with the semantic graph.
  * Edge identity comes from Mermaid's ids, never SVG paint order (clusters
- * reorder paths). Only paths without any identity can use an order fallback.
+ * reorder paths). Unresolved or ambiguous identities stay code-only.
  */
 export function correlateFlowchart(svg: SVGSVGElement, graph: FlowGraph): Correlation {
   const nodes = new Map<string, SVGGElement>()
@@ -33,28 +104,8 @@ export function correlateFlowchart(svg: SVGSVGElement, graph: FlowGraph): Correl
   const failed: string[] = []
 
   const nodeEls = [...svg.querySelectorAll<SVGGElement>('g.node')]
-  const claimed = new Set<Element>()
-
-  for (const node of graph.nodes) {
-    const re = new RegExp(`[-_]${esc(node.id)}[-_]\\d+$`)
-    const el = nodeEls.find((e) => !claimed.has(e) && re.test(e.id))
-    if (el) {
-      nodes.set(node.entityId, el)
-      claimed.add(el)
-      el.setAttribute('data-mw-entity', node.entityId)
-    }
-  }
-  // fallback: order matching for any leftovers
-  const unmatchedNodes = graph.nodes.filter((n) => !nodes.has(n.entityId))
-  const unclaimedEls = nodeEls.filter((e) => !claimed.has(e))
-  if (unmatchedNodes.length === unclaimedEls.length) {
-    unmatchedNodes.forEach((n, i) => {
-      nodes.set(n.entityId, unclaimedEls[i])
-      unclaimedEls[i].setAttribute('data-mw-entity', n.entityId)
-    })
-  } else {
-    for (const n of unmatchedNodes) failed.push(n.entityId)
-  }
+  matchNodes(graph.nodes, nodeEls,
+    (node, el) => new RegExp(`^${esc(svg.id)}-flowchart-${esc(node.id)}-\\d+$`).test(el.id), nodes, failed)
 
   const edgeEls = [...svg.querySelectorAll<SVGElement>('.edgePaths > path, path.flowchart-link')]
   const claimedEdges = new Set<Element>()
@@ -69,10 +120,11 @@ export function correlateFlowchart(svg: SVGSVGElement, graph: FlowGraph): Correl
   for (const edge of graph.edges) {
     const id = edge.seg.edgeId
     if (!id) continue
-    const el = edgeEls.find((e) => !claimedEdges.has(e) && (
-      e.getAttribute('data-id') === id || e.id === id || e.id === `${svg.id}-${id}`
-    ))
-    if (el) {
+    const candidates = edgeEls.filter(e => edgeIdentity(svg, e) === id)
+    const [el] = candidates
+    const conflicts = graph.edges.some(other => other !== edge && (other.seg.edgeId === id ||
+      (!other.seg.edgeId && new RegExp(`^L_${esc(other.source)}_${esc(other.target)}_\\d+$`).test(id))))
+    if (candidates.length === 1 && !conflicts) {
       claimEdge(edge.entityId, el)
       originalIds.set(el, id)
     }
@@ -87,47 +139,43 @@ export function correlateFlowchart(svg: SVGSVGElement, graph: FlowGraph): Correl
   }
   for (const group of pairs.values()) {
     const { source, target } = group[0]
-    const re = new RegExp(`(^|-)L[-_]${esc(source)}[-_]${esc(target)}[-_](\\d+)$`)
+    // Distinct endpoint pairs can share an underscore-delimited Mermaid id.
+    // Reject the namespace even if only one of its paths rendered.
+    if ([...pairs.values()].some(other => other !== group &&
+      `${other[0].source}_${other[0].target}` === `${source}_${target}`)) continue
+    const re = new RegExp(`^L_${esc(source)}_${esc(target)}_(\\d+)$`)
     const candidates = edgeEls.filter(e => !claimedEdges.has(e)).flatMap(el => {
-      const match = re.exec(el.id || el.getAttribute('data-id') || '')
-      return match ? [{ el, order: Number(match[2]), id: match[0].replace(/^-/, '') }] : []
+      const match = re.exec(edgeIdentity(svg, el) ?? '')
+      return match ? [{ el, order: Number(match[1]), id: match[0] }] : []
     }).sort((a, b) => a.order - b.order)
     // Counts must agree: a partially rendered parallel set is ambiguous.
     // Mermaid 11's suffixes can have gaps (e.g. 0, 2), so use numeric rank.
-    if (candidates.length === group.length) {
+    if (candidates.length === group.length && new Set(candidates.map(c => c.order)).size === candidates.length &&
+      !candidates.some(c => graph.edges.some(e => e.seg.edgeId === c.id))) {
       group.forEach((edge, i) => {
         claimEdge(edge.entityId, candidates[i].el)
         originalIds.set(candidates[i].el, candidates[i].id)
       })
     }
   }
-  const unmatchedEdges = graph.edges.filter((e) => !edges.has(e.entityId))
-  const anonymousEls = edgeEls.filter(e => !claimedEdges.has(e) && !e.id && !e.getAttribute('data-id'))
-  if (unmatchedEdges.length === anonymousEls.length) {
-    unmatchedEdges.forEach((edge, i) => claimEdge(edge.entityId, anonymousEls[i]))
-  }
   for (const edge of graph.edges) if (!edges.has(edge.entityId)) failed.push(edge.entityId)
 
-  // subgraphs render as clusters; their ids embed the subgraph id
-  for (const sg of graph.subgraphs) {
-    const cluster = [...svg.querySelectorAll<SVGGElement>('g.cluster')].find(
-      (el) => el.id === sg.id || el.id.includes(sg.id) || el.querySelector('.cluster-label')?.textContent?.trim() === (sg.title ?? sg.id),
-    )
-    if (cluster && !cluster.hasAttribute('data-mw-entity')) {
-      cluster.setAttribute('data-mw-entity', sg.entityId)
-      nodes.set(sg.entityId, cluster)
-    }
-  }
+  matchNodes(graph.subgraphs, [...svg.querySelectorAll<SVGGElement>('g.cluster')],
+    (sg, el) => el.id === `${svg.id}-${sg.id}`, nodes, failed)
 
   // Mermaid 11 puts the original edge id on the inner g.label[data-id].
   // Label containers are reordered with clusters just like paths. Correlate
   // through the already resolved path, including explicit edge ids.
   const labelEls = [...svg.querySelectorAll<SVGGElement>('.edgeLabels > .edgeLabel')]
-  const labelsById = new Map<string, SVGGElement>()
+  const labelsById = new Map<string, Set<SVGGElement>>()
   for (const label of labelEls) {
     for (const el of [label, ...label.querySelectorAll('[data-id], [id]')]) {
       for (const id of [el.id, el.getAttribute('data-id')]) {
-        if (id) labelsById.set(id, label)
+        if (id) {
+          const labels = labelsById.get(id) ?? new Set<SVGGElement>()
+          labels.add(label)
+          labelsById.set(id, labels)
+        }
       }
     }
   }
@@ -136,13 +184,15 @@ export function correlateFlowchart(svg: SVGSVGElement, graph: FlowGraph): Correl
     const ids = [path.getAttribute('data-id'), path.id,
       originalIds.get(path),
       svg.id && path.id.startsWith(`${svg.id}-`) ? path.id.slice(svg.id.length + 1) : '']
-    const label = ids.map(id => id ? labelsById.get(id) : undefined).find(el => el && !claimedLabels.has(el))
-    if (!label) continue
+    const candidates = new Set(ids.flatMap(id => [...(labelsById.get(id ?? '') ?? [])]))
+    const [label] = candidates
+    if (candidates.size !== 1 || claimedLabels.has(label)) continue
     edgeLabels.set(entityId, label)
     claimedLabels.add(label)
     label.setAttribute('data-mw-entity', entityId)
   }
 
+  markUncorrelated(svg)
   return { nodes, edges, edgeLabels, failed }
 }
 
@@ -157,68 +207,13 @@ export function correlateState(svg: SVGSVGElement, graph: StateGraph): Correlati
   const edgeLabels = new Map<string, SVGGElement>()
   const failed: string[] = []
 
-  const nodeEls = [...svg.querySelectorAll<SVGGElement>('g.node')].filter(
-    (el) => !/root_start|root_end/.test(el.id),
-  )
-  const claimed = new Set<Element>()
-  for (const state of graph.states) {
-    const re = new RegExp(`[-_]${esc(state.id)}[-_]\\d+$`)
-    const el = nodeEls.find((e) => !claimed.has(e) && re.test(e.id))
-    if (el) {
-      nodes.set(state.entityId, el)
-      claimed.add(el)
-      el.setAttribute('data-mw-entity', state.entityId)
-    }
-  }
-  const unmatched = graph.states.filter((s) => !nodes.has(s.entityId))
-  const unclaimed = nodeEls.filter((e) => !claimed.has(e))
-  if (unmatched.length === unclaimed.length) {
-    unmatched.forEach((s, i) => {
-      nodes.set(s.entityId, unclaimed[i])
-      unclaimed[i].setAttribute('data-mw-entity', s.entityId)
-    })
-  } else {
-    for (const s of unmatched) failed.push(s.entityId)
-  }
+  matchNodes(graph.states, [...svg.querySelectorAll<SVGGElement>('g.node, g.statediagram-state')],
+    (state, el) => new RegExp(`^${esc(svg.id)}-state-${esc(state.id)}-\\d+$`).test(el.id), nodes, failed)
+  // State transition ids are only edge<N>; they carry no endpoint identity.
+  // Nested states reorder them, so leave transitions and their labels code-only.
+  failed.push(...graph.transitions.map(t => t.entityId))
 
-  // composite states render as clusters
-  for (const state of graph.states.filter((s) => s.isComposite)) {
-    const cluster = [...svg.querySelectorAll<SVGGElement>('g.cluster')].find(
-      (el) => el.id.includes(state.id) || el.querySelector('.cluster-label, .label-container + *')?.textContent?.trim() === state.label,
-    )
-    if (cluster && !cluster.hasAttribute('data-mw-entity')) {
-      cluster.setAttribute('data-mw-entity', state.entityId)
-      nodes.set(state.entityId, cluster)
-    }
-  }
-
-  // transitions render in document order
-  const edgeEls = [...svg.querySelectorAll<SVGElement>('.edgePaths > path, path.transition')]
-  if (edgeEls.length === graph.transitions.length) {
-    graph.transitions.forEach((t, i) => {
-      edges.set(t.entityId, edgeEls[i])
-      edgeEls[i].setAttribute('data-mw-entity', t.entityId)
-    })
-  } else {
-    for (const t of graph.transitions) failed.push(t.entityId)
-  }
-
-  const labelEls = [...svg.querySelectorAll<SVGGElement>('.edgeLabels > .edgeLabel')]
-  if (labelEls.length === graph.transitions.length) {
-    graph.transitions.forEach((t, i) => {
-      edgeLabels.set(t.entityId, labelEls[i])
-      labelEls[i].setAttribute('data-mw-entity', t.entityId)
-    })
-  } else {
-    const labeled = graph.transitions.filter((t) => t.label)
-    if (labelEls.length === labeled.length) {
-      labeled.forEach((t, i) => {
-        edgeLabels.set(t.entityId, labelEls[i])
-        labelEls[i].setAttribute('data-mw-entity', t.entityId)
-      })
-    }
-  }
-
+  markUncorrelated(svg)
   return { nodes, edges, edgeLabels, failed }
 }
 
@@ -230,26 +225,8 @@ export function correlateClass(svg: SVGSVGElement, graph: ClassGraph): Correlati
   const failed: string[] = []
 
   const nodeEls = [...svg.querySelectorAll<SVGGElement>('g.node')]
-  const claimed = new Set<Element>()
-  for (const cls of graph.classes) {
-    const re = new RegExp(`[-_]${esc(cls.id)}[-_]\\d+$`)
-    const el = nodeEls.find((e) => !claimed.has(e) && re.test(e.id))
-    if (el) {
-      nodes.set(cls.entityId, el)
-      claimed.add(el)
-      el.setAttribute('data-mw-entity', cls.entityId)
-    }
-  }
-  const unmatched = graph.classes.filter((c) => !nodes.has(c.entityId))
-  const unclaimed = nodeEls.filter((e) => !claimed.has(e))
-  if (unmatched.length === unclaimed.length) {
-    unmatched.forEach((c, i) => {
-      nodes.set(c.entityId, unclaimed[i])
-      unclaimed[i].setAttribute('data-mw-entity', c.entityId)
-    })
-  } else {
-    for (const c of unmatched) failed.push(c.entityId)
-  }
+  matchNodes(graph.classes, nodeEls,
+    (cls, el) => new RegExp(`^${esc(svg.id)}-classId-${esc(cls.id)}-\\d+$`).test(el.id), nodes, failed)
 
   // tag member label rows for double-click editing (mermaid displays
   // attributes first, then methods, after the class-name label)
@@ -269,24 +246,9 @@ export function correlateClass(svg: SVGSVGElement, graph: ClassGraph): Correlati
     })
   }
 
-  const edgeEls = [...svg.querySelectorAll<SVGElement>('.edgePaths > path, path.relation')]
-  if (edgeEls.length === graph.relations.length) {
-    graph.relations.forEach((r, i) => {
-      edges.set(r.entityId, edgeEls[i])
-      edgeEls[i].setAttribute('data-mw-entity', r.entityId)
-    })
-  } else {
-    for (const r of graph.relations) failed.push(r.entityId)
-  }
+  matchRelations(svg, graph.relations, r => `id_${r.source}_${r.target}_`, edges, edgeLabels, failed)
 
-  const labelEls = [...svg.querySelectorAll<SVGGElement>('.edgeLabels > .edgeLabel')]
-  if (labelEls.length === graph.relations.length) {
-    graph.relations.forEach((r, i) => {
-      edgeLabels.set(r.entityId, labelEls[i])
-      labelEls[i].setAttribute('data-mw-entity', r.entityId)
-    })
-  }
-
+  markUncorrelated(svg)
   return { nodes, edges, edgeLabels, failed }
 }
 
@@ -297,27 +259,8 @@ export function correlateEr(svg: SVGSVGElement, graph: ErGraph): Correlation {
   const edgeLabels = new Map<string, SVGGElement>()
   const failed: string[] = []
 
-  const nodeEls = [...svg.querySelectorAll<SVGGElement>('g[id*="entity"], g.node')]
-  const claimed = new Set<Element>()
-  for (const entity of graph.entities) {
-    const re = new RegExp(`entity-${esc(entity.id)}-|[-_]${esc(entity.id)}[-_]\\d+$`)
-    const el = nodeEls.find((e) => !claimed.has(e) && re.test(e.id))
-    if (el) {
-      nodes.set(entity.entityId, el)
-      claimed.add(el)
-      el.setAttribute('data-mw-entity', entity.entityId)
-    }
-  }
-  const unmatched = graph.entities.filter((e) => !nodes.has(e.entityId))
-  const unclaimed = nodeEls.filter((e) => !claimed.has(e))
-  if (unmatched.length && unmatched.length === unclaimed.length) {
-    unmatched.forEach((e, i) => {
-      nodes.set(e.entityId, unclaimed[i])
-      unclaimed[i].setAttribute('data-mw-entity', e.entityId)
-    })
-  } else {
-    for (const e of unmatched) failed.push(e.entityId)
-  }
+  matchNodes(graph.entities, [...svg.querySelectorAll<SVGGElement>('g.node')],
+    (entity, el) => new RegExp(`^${esc(svg.id)}-entity-${esc(entity.id)}-\\d+$`).test(el.id), nodes, failed)
 
   // tag attribute rows (4 .nodeLabel cells per attribute, after the name label)
   for (const entity of graph.entities) {
@@ -335,28 +278,12 @@ export function correlateEr(svg: SVGSVGElement, graph: ErGraph): Correlation {
     })
   }
 
-  const edgeEls = [
-    ...svg.querySelectorAll<SVGElement>('path.relationshipLine, .er.relationshipLine, .edgePaths > path'),
-  ]
-  if (edgeEls.length === graph.relations.length) {
-    graph.relations.forEach((r, i) => {
-      edges.set(r.entityId, edgeEls[i])
-      edgeEls[i].setAttribute('data-mw-entity', r.entityId)
-    })
-  } else {
-    for (const r of graph.relations) failed.push(r.entityId)
-  }
+  matchRelations(svg, graph.relations, r => {
+    const source = nodes.get(`entity:${r.source}`), target = nodes.get(`entity:${r.target}`)
+    return source && target ? `id_${source.id.slice(svg.id.length + 1)}_${target.id.slice(svg.id.length + 1)}_` : null
+  }, edges, edgeLabels, failed)
 
-  const labelEls = [
-    ...svg.querySelectorAll<SVGGElement>('.relationshipLabel, .er.relationshipLabel, .edgeLabels > .edgeLabel'),
-  ]
-  if (labelEls.length === graph.relations.length) {
-    graph.relations.forEach((r, i) => {
-      edgeLabels.set(r.entityId, labelEls[i])
-      labelEls[i].setAttribute('data-mw-entity', r.entityId)
-    })
-  }
-
+  markUncorrelated(svg)
   return { nodes, edges, edgeLabels, failed }
 }
 

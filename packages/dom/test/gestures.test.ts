@@ -8,7 +8,7 @@ const fake: MermaidLike = {
   initialize() {}, async parse() {},
   async render(_id, code) {
     const graph = new MermaidWysiwygEditor({ code }).result.flowchart!
-    return { svg: `<svg xmlns="http://www.w3.org/2000/svg"><g class="nodes">${graph.nodes.map((n, i) => `<g class="node" id="flowchart-${n.id}-${i}"><text>${n.label}</text></g>`).join('')}</g><g class="edgePaths">${graph.edges.map((e, i) => `<path id="L_${e.source}_${e.target}_${i}" d="M0 0L100 100"/>`).join('')}</g></svg>` }
+    return { svg: `<svg id="fixture" xmlns="http://www.w3.org/2000/svg"><g class="nodes">${graph.nodes.map((n, i) => `<g class="node" id="fixture-flowchart-${n.id}-${i}"><text>${n.label}</text></g>`).join('')}</g><g class="edgePaths">${graph.edges.map((e, i) => `<path id="L_${e.source}_${e.target}_${i}" d="M0 0L100 100"/>`).join('')}</g></svg>` }
   },
 }
 let host: HTMLElement, editor: MermaidWysiwygEditor, view: MermaidCanvasView

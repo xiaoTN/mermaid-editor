@@ -687,7 +687,7 @@ export class MermaidCanvasView {
                   ? correlateLineItems(svg, this.editor.result.lineItems)
                   : null
     this.seqCorrelation = sequence ? correlateSequence(svg, sequence) : null
-    for (const path of svg.querySelectorAll<SVGPathElement>('path[data-mw-entity^="edge:"]')) {
+    for (const path of svg.querySelectorAll<SVGPathElement>('path[data-mw-entity^="edge:"], path[data-mw-ambiguous]')) {
       const hit = path.cloneNode(false) as SVGPathElement
       hit.removeAttribute('id')
       hit.removeAttribute('style')
@@ -751,6 +751,7 @@ export class MermaidCanvasView {
   private entityHitFromEvent(e: Event): { id: string; el: Element } | null {
     let el = e.target as Element | null
     while (el && el !== this.svg) {
+      if (el.hasAttribute?.('data-mw-ambiguous')) return null
       const entity = el.getAttribute?.('data-mw-entity')
       if (entity) return { id: entity, el }
       el = el.parentElement as Element | null
@@ -782,6 +783,11 @@ export class MermaidCanvasView {
     // while an in-place editor is open, clicks must not re-select or steal
     // focus — blurring the editor already commits the edit
     if (this.inlineInput || this.inPlaceSession) return
+    if ((e.target as Element).closest?.('[data-mw-entity], [data-mw-ambiguous]')?.hasAttribute('data-mw-ambiguous')) {
+      this.editor.clearSelection('canvas')
+      this.notices.show([{ key: 'canvas.ambiguous' }])
+      return
+    }
     const hit = this.entityHitFromEvent(e)
     if (hit) {
       const entity = hit.id
@@ -818,6 +824,11 @@ export class MermaidCanvasView {
 
   private onSvgDblClick(e: MouseEvent) {
     if (this.readOnly) return
+    if ((e.target as Element).closest?.('[data-mw-entity], [data-mw-ambiguous]')?.hasAttribute('data-mw-ambiguous')) {
+      this.editor.clearSelection('canvas')
+      this.notices.show([{ key: 'canvas.ambiguous' }])
+      return
+    }
     // class members are editable rows inside the class box
     const memberEl = (e.target as Element).closest?.('[data-mw-member-line]')
     if (memberEl && this.editor.result.classGraph) {
@@ -962,6 +973,7 @@ export class MermaidCanvasView {
     let target: string | null = null
     let el = hit as Element | null
     while (el && el !== this.container) {
+      if (el.hasAttribute?.('data-mw-ambiguous')) break
       const entity = el.getAttribute?.('data-mw-entity')
       if (entity?.startsWith(kind)) {
         target = entity
@@ -1053,7 +1065,6 @@ export class MermaidCanvasView {
         this.correlation?.nodes.get(entityId)?.querySelector('.cluster-label') ??
         hint ??
         this.correlation?.nodes.get(entityId) ??
-        this.svg?.querySelector(`#${CSS.escape(sg.id)}`) ??
         null
       commitValue = (v) => this.editor.dispatch({ type: 'renameSubgraph', id: sg.id, title: v }, 'canvas')
     } else if (this.editor.result.state && entityId.startsWith('state:')) {

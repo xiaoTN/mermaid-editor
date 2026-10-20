@@ -1,6 +1,6 @@
 import { getLocale, setLocale, messages, listKeys } from '../../packages/dom/src/i18n/index.ts'
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { join, relative } from 'node:path'
 import { performance } from 'node:perf_hooks'
 import { fileURLToPath } from 'node:url'
@@ -18,7 +18,8 @@ const root = fileURLToPath(new URL('../../', import.meta.url))
 const samples = join(root, 'testdata', 'samples')
 const output = join(root, 'out', 'cases')
 // 同步副本在仓库根目录，testdata/ 内的历史规则只读。
-const expectedCaseNumbers = new Set([...readFileSync(join(root, 'CASES.md'), 'utf8')
+const suppliedRules = join(root, '.codex-runs', 'CASES.md')
+const expectedCaseNumbers = new Set([...readFileSync(existsSync(suppliedRules) ? suppliedRules : join(root, 'CASES.md'), 'utf8')
   .matchAll(/^(?:\|\s*|- )?(\d+[a-d]?)(?:\s*\||\.|\s)/gm)].map(match => match[1]))
 mkdirSync(output, { recursive: true })
 
@@ -655,11 +656,14 @@ for (const [number, note, run] of draftChecks) {
   } catch (error) { failed++; print(`用例 ${number}：失败（${message(error)}）`) }
 }
 const dom = new JSDOM('<!doctype html><body></body>')
+Object.assign(globalThis, { window: dom.window, document: dom.window.document, Element: dom.window.Element,
+  SVGElement: dom.window.SVGElement, HTMLElement: dom.window.HTMLElement,
+  CSS: { escape: (s: string) => s.replace(/[^\w-]/g, c => `\\${c}`) } })
 try {
   for (const [number, note, run] of createDomCases(join(root, 'packages/core/test/fixtures'))) {
     try {
       check(expectedCaseNumbers.has(number), `最新 CASES.md 缺少用例 ${number}`)
-      for (const locale of ['zh-CN', 'en'] as const) { setLocale(locale); run(dom.window.document) }
+      for (const locale of ['zh-CN', 'en'] as const) { setLocale(locale); await run(dom.window.document) }
       passed++; print(`用例 ${number}：通过（${note}；高亮线、菜单及实际拖动观感：界面验）`)
     } catch (error) { failed++; print(`用例 ${number}：失败（${message(error)}）`) }
   }

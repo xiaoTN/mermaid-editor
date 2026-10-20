@@ -2,6 +2,7 @@
 import { JSDOM } from '../../packages/dom/node_modules/jsdom/lib/api.js'
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
+import { correlationSources } from './correlation-sources.mts'
 
 const root = fileURLToPath(new URL('../../', import.meta.url))
 const dom = new JSDOM('<!doctype html><body></body>', { pretendToBeVisual: true })
@@ -17,7 +18,11 @@ const { default: mermaid } = await import('../../apps/playground/node_modules/me
 mermaid.initialize({ startOnLoad: false, securityLevel: 'loose', flowchart: { htmlLabels: false } })
 const directory = `${root}packages/core/test/fixtures`
 mkdirSync(directory, { recursive: true })
-for (const name of ['louvre', 'edge-forms']) {
+const requested = process.argv.slice(2)
+for (const name of requested.length ? requested : ['louvre', 'edge-forms', ...Object.keys(correlationSources)]) {
+  if (name in correlationSources) {
+    writeFileSync(`${directory}/${name}.mmd`, correlationSources[name as keyof typeof correlationSources], 'utf8')
+  }
   const supplied = `${root}.codex-runs/louvre.mmd`
   const code = readFileSync(name === 'louvre' && existsSync(supplied) ? supplied : `${directory}/${name}.mmd`, 'utf8')
   if (name === 'louvre') writeFileSync(`${directory}/${name}.mmd`, code, 'utf8')

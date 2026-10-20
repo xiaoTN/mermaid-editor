@@ -31,6 +31,7 @@ export default {
   'edge.label': "文字",
   'edge.delete': "删除",
   'toast.dupEdge': "已经有这条连线了，没有重复添加",
+  'canvas.ambiguous': "这一项无法在画布上直接编辑，请在代码中修改",
   'toast.nodeHasStyle': "该节点还有样式行，已保留",
   'toast.readonly': "这类图暂时只能看、不能拖改",
   'toast.copied': "代码已复制",

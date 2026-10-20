@@ -123,7 +123,7 @@ func confirmClose(hwnd uintptr, labels closeLabels) string {
 	defer pUnhookWindowsHookEx.Call(hook)
 	body, _ := syscall.UTF16PtrFromString(labels.Body)
 	title, _ := syscall.UTF16PtrFromString(labels.Title)
-	r, _, _ := pMessageBoxW.Call(hwnd, uintptr(unsafe.Pointer(body)), uintptr(unsafe.Pointer(title)), 0x3|0x30|0x200 /* YESNOCANCEL|WARNING|DEFBUTTON3 */)
+	r, _, _ := pMessageBoxW.Call(hwnd, uintptr(unsafe.Pointer(body)), uintptr(unsafe.Pointer(title)), 0x3|0x30|0x000 /* YESNOCANCEL|WARNING|DEFBUTTON1 (Save) */)
 	if r == 6 {
 		return "save"
 	}

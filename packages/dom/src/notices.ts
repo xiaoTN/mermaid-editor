@@ -22,13 +22,14 @@ export function mountNotices(host: HTMLElement, editor: MermaidWysiwygEditor, re
   }
   host.append(toast, badge)
   hintContainer.append(hint)
-  const off = editor.on('warning', next => {
+  const show = (next: EditorNotice[]) => {
     notices = next; update(); clearTimeout(timer)
     timer = setTimeout(() => { notices = []; update() }, 4000)
-  })
+  }
+  const off = editor.on('warning', show)
   const offLocale = onLocaleChange(update)
   update()
-  return { update, destroy() { clearTimeout(timer); off(); offLocale(); toast.remove(); hint.remove(); badge.remove() } }
+  return { update, show, destroy() { clearTimeout(timer); off(); offLocale(); toast.remove(); hint.remove(); badge.remove() } }
 }
 
 export const NOTICE_CSS = `

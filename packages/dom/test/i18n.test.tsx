@@ -10,7 +10,7 @@ import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
 
-vi.mock('../../../apps/playground/node_modules/mermaid', () => ({ default: { initialize() {}, async render() { return { svg: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300"/>' } }, async parse() {} } }))
+vi.mock('../../../apps/playground/node_modules/mermaid', () => ({ default: { initialize() {}, async render() { return { svg: '<svg id="fixture" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300"/>' } }, async parse() {} } }))
 
 const CJK = /[\u3400-\u9fff]/u
 const before = 'flowchart LR\r\n\tA[甲] & B[乙] --> C  \r\n\tstyle A fill:red\r\n'
@@ -38,7 +38,7 @@ beforeEach(async () => {
   host = document.createElement('div'); document.body.append(host)
   view = new MermaidCanvasView({ editor, container: host, panZoom: true, mermaid: {
     initialize() {}, async parse() {}, async render() {
-      return { svg: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300"><g class="node" id="flowchart-A-0"><text>甲</text></g><g class="node" id="flowchart-B-1"/><g class="node" id="flowchart-C-2"/><g class="edgePaths"><path id="L_A_C_0"/><path id="L_B_C_1"/></g></svg>' }
+      return { svg: '<svg id="fixture" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300"><g class="node" id="fixture-flowchart-A-0"><text>甲</text></g><g class="node" id="fixture-flowchart-B-1"/><g class="node" id="fixture-flowchart-C-2"/><g class="edgePaths"><path id="L_A_C_0"/><path id="L_B_C_1"/></g></svg>' }
     },
   } })
   await view.render()
