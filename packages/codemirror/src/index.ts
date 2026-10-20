@@ -3,12 +3,14 @@ import { EditorState, StateEffect, StateField } from '@codemirror/state'
 import { Decoration, EditorView, keymap, lineNumbers, type DecorationSet } from '@codemirror/view'
 import { bindTextPane, type MermaidWysiwygEditor, type Span, type TextPaneBinding } from '@inkeep/mermaid-wysiwyg-core'
 import { mermaidLanguage } from './language'
+import { LosslessText } from './lossless'
 
 export { mermaidLanguage } from './language'
 
 const setHighlights = StateEffect.define<Span[]>()
 
 const highlightMark = Decoration.mark({ class: 'mw-cm-entity' })
+const selectedLine = Decoration.line({ class: 'mw-cm-selected-line' })
 
 const highlightField = StateField.define<DecorationSet>({
   create: () => Decoration.none,
@@ -16,8 +18,17 @@ const highlightField = StateField.define<DecorationSet>({
     deco = deco.map(tr.changes)
     for (const e of tr.effects) {
       if (e.is(setHighlights)) {
+        const spans = e.value.filter(s => s.start >= 0 && s.end > s.start && s.end <= tr.newDoc.length)
+        const lines = new Set<number>()
+        for (const span of spans) {
+          const last = tr.newDoc.lineAt(span.end - 1).number
+          for (let n = tr.newDoc.lineAt(span.start).number; n <= last; n++) {
+            lines.add(tr.newDoc.line(n).from)
+          }
+        }
         deco = Decoration.set(
-          e.value.filter((s) => s.end <= tr.newDoc.length).map((s) => highlightMark.range(s.start, s.end)),
+          [...spans.map(s => highlightMark.range(s.start, s.end)),
+            ...[...lines].map(from => selectedLine.range(from))], true,
         )
       }
     }
@@ -27,6 +38,10 @@ const highlightField = StateField.define<DecorationSet>({
 })
 
 const baseTheme = EditorView.baseTheme({
+  '.mw-cm-selected-line': {
+    backgroundColor: 'rgba(96, 165, 250, 0.18)',
+    boxShadow: 'inset 3px 0 #60a5fa',
+  },
   '.mw-cm-entity': {
     backgroundColor: 'color-mix(in srgb, var(--mw-accent, #6366f1) 28%, transparent)',
     outline: '1px solid color-mix(in srgb, var(--mw-accent, #6366f1) 55%, transparent)',
@@ -50,9 +65,17 @@ export class MermaidCodeMirror {
   private binding: TextPaneBinding
 
   constructor(host: HTMLElement, editor: MermaidWysiwygEditor, extraExtensions: unknown[] = []) {
+    const raw = new LosslessText(editor.code)
+    let revealOffset: number | null = null
     const updateListener = EditorView.updateListener.of((update) => {
-      if (update.docChanged) this.binding.notifyTextChange()
-      else if (update.selectionSet) this.binding.notifyCaretMove(update.state.selection.main.head)
+      if (this.binding?.applying) return
+      if (update.docChanged) {
+        const changes: { from: number; to: number; insert: string }[] = []
+        update.changes.iterChanges((from, to, _fromB, _toB, inserted) => changes.push({ from, to, insert: inserted.toString() }))
+        raw.editPane(changes)
+        this.binding.notifyTextChange()
+      }
+      else if (update.selectionSet) this.binding.notifyCaretMove(raw.rawOffset(update.state.selection.main.head))
     })
 
     this.view = new EditorView({
@@ -79,6 +102,14 @@ export class MermaidCodeMirror {
           keymap.of(defaultKeymap),
           lineNumbers(),
           mermaidLanguage(),
+          EditorView.scrollHandler.of((view, range) => {
+            if (range.head !== revealOffset) return false
+            revealOffset = null
+            const block = view.lineBlockAt(range.head)
+            const scroller = view.scrollDOM
+            scroller.scrollTop = Math.max(0, block.top - (scroller.clientHeight - block.height) / 2)
+            return true
+          }),
           highlightField,
           baseTheme,
           updateListener,
@@ -88,23 +119,26 @@ export class MermaidCodeMirror {
     })
 
     this.binding = bindTextPane(editor, {
-      getText: () => this.view.state.doc.toString(),
+      getText: () => raw.code,
       applyEdits: (edits) => {
-        this.view.dispatch({ changes: edits.map((e) => ({ from: e.start, to: e.end, insert: e.text })) })
+        const changes = edits.map(e => ({ from: raw.paneOffset(e.start), to: raw.paneOffset(e.end), insert: e.text }))
+        raw.apply(edits)
+        this.view.dispatch({ changes })
       },
       setText: (text) => {
+        raw.code = text
         this.view.dispatch({ changes: { from: 0, to: this.view.state.doc.length, insert: text } })
       },
-      setHighlights: (spans) => this.view.dispatch({ effects: setHighlights.of(spans) }),
+      setHighlights: (spans) => this.view.dispatch({ effects: setHighlights.of(spans.map(span => ({ start: raw.paneOffset(span.start), end: raw.paneOffset(span.end) }))) }),
       revealPosition: (offset) => {
         // Scroll only the editor's own scroller. CodeMirror's scrollIntoView
         // effect also scrolls every scrollable ancestor — including the page —
         // so a canvas click revealing a span would yank the host app's
         // viewport around.
-        const block = this.view.lineBlockAt(offset)
-        const scroller = this.view.scrollDOM
-        const top = block.top - (scroller.clientHeight - block.height) / 2
-        scroller.scrollTop = Math.max(0, top)
+        // Let CodeMirror measure and render the target before the scoped
+        // scroll handler runs. Immediate lineBlockAt can use stale heights.
+        revealOffset = raw.paneOffset(offset)
+        this.view.dispatch({ effects: EditorView.scrollIntoView(revealOffset, { y: 'center' }) })
       },
     })
   }

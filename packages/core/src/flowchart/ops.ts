@@ -221,6 +221,7 @@ function rebuildChain(
     dropNodeId?: string
     dropEdge?: { segIndex: number; source: string; target: string }
     retarget?: { edge: FlowEdge; end: 'source' | 'target'; nodeId: string }
+    segment?: { edge: FlowEdge; text: string }
   },
 ): string[] {
   interface Expanded {
@@ -250,7 +251,7 @@ function rebuildChain(
     return true
   })
 
-  if (kept.length === expanded.length && !opts.dropNodeId && !opts.retarget) return [slice(ctx, chain.span)]
+  if (kept.length === expanded.length && !opts.dropNodeId && !opts.retarget && !opts.segment) return [slice(ctx, chain.span)]
 
   const survivors = new Set<NodeRef>()
   for (const e of kept) {
@@ -271,7 +272,10 @@ function rebuildChain(
     const refText = (ref: NodeRef | string) => typeof ref === 'string' ? ref : slice(ctx, ref.span)
     const seg = chain.edges[e.segIndex]
     const segStart = seg.idSpan?.start ?? seg.span.start
-    const segText = slice(ctx, { start: segStart, end: seg.span.end })
+    const replacement = opts.segment
+    const segText = replacement && e.segIndex === replacement.edge.segIndex &&
+      e.a === replacement.edge.sourceRef && e.b === replacement.edge.targetRef
+      ? replacement.text : slice(ctx, { start: segStart, end: seg.span.end })
     const sourceGroup = chain.groups[e.segIndex]
     const before = slice(ctx, { start: sourceGroup[sourceGroup.length - 1].span.end, end: segStart })
     const after = slice(ctx, { start: seg.span.end, end: chain.groups[e.segIndex + 1][0].span.start })
@@ -308,6 +312,21 @@ function rebuildChain(
 
 function findEdge(graph: FlowGraph, edgeId: string): FlowEdge | null {
   return graph.edges.find((e) => e.entityId === edgeId) ?? null
+}
+
+/** A fan shares one operator span; expand only its statement before editing
+ * one semantic edge. Retain source edge order so linkStyle needs no remap. */
+function segmentEdits(ctx: FlowOpContext, edge: FlowEdge, edits: TextEdit[]): OpResult {
+  if (edits.every(edit => ctx.code.slice(edit.start, edit.end) === edit.text)) return { edits: [] }
+  const shared = ctx.graph.edges.some(other => other !== edge && other.seg === edge.seg)
+  if (!shared) return { edits }
+  const stmt = ctx.graph.statements.get(edge.lineIndex)?.[edge.stmtIndex]
+  if (!stmt || stmt.kind !== 'chain') return { edits: [] }
+  const start = edge.seg.idSpan?.start ?? edge.seg.span.start
+  const text = applyEdits(ctx.code.slice(start, edge.seg.span.end),
+    edits.map(edit => ({ ...edit, start: edit.start - start, end: edit.end - start }))).text
+  const replacement = rebuildChain(ctx, edge.lineIndex, stmt, { segment: { edge, text } })
+  return { edits: statementEdits(ctx, new Map([[stmt, replacement]])) }
 }
 
 const LINK_STYLE_INDICES = /^(\s*linkStyle\s+)(\d+(?:\s*,\s*\d+)*)(?=\s)/
@@ -483,12 +502,12 @@ export function compileFlowchartOp(ctx: FlowOpContext, op: FlowchartOp): OpResul
         if (label === '') {
           // remove the label entirely by rewriting the operator
           const opStr = edgeOpString(edge.seg.line, edge.seg.arrowEnd)
-          return { edits: [{ start: edge.seg.span.start, end: edge.seg.span.end, text: opStr }] }
+          return segmentEdits(ctx, edge, [{ start: edge.seg.span.start, end: edge.seg.span.end, text: opStr }])
         }
-        return { edits: [{ start: edge.seg.labelSpan.start, end: edge.seg.labelSpan.end, text: printEdgeLabel(label, isQuotedLabel(edge.seg.label)) }] }
+        return segmentEdits(ctx, edge, [{ start: edge.seg.labelSpan.start, end: edge.seg.labelSpan.end, text: printEdgeLabel(label, isQuotedLabel(edge.seg.label)) }])
       }
       if (label === '') return { edits: [] }
-      return { edits: [{ start: edge.seg.span.end, end: edge.seg.span.end, text: `|${printEdgeLabel(label)}|` }] }
+      return segmentEdits(ctx, edge, [{ start: edge.seg.span.end, end: edge.seg.span.end, text: `|${printEdgeLabel(label)}|` }])
     }
 
     case 'setEdgeStyle': {
@@ -504,18 +523,18 @@ export function compileFlowchartOp(ctx: FlowOpContext, op: FlowchartOp): OpResul
         const last = /(?:\.+-+|-{2,}|={2,})(?:[>xo])?$/.exec(raw)!
         const left = line === 'thick' ? '==' : line === 'dotted' ? '-.' : '--'
         const right = line === 'dotted' ? edgeOpString(line, arrowEnd).slice(1) : edgeOpString(line, arrowEnd)
-        return { edits: [
+        return segmentEdits(ctx, edge, [
           { start: edge.seg.span.start, end: edge.seg.span.start + first[0].length, text: start + left },
           { start: edge.seg.span.end - last[0].length, end: edge.seg.span.end, text: right },
-        ] }
+        ])
       }
       if (op.preserveLabelForm && line !== 'invisible') {
-        return { edits: [{ start: edge.seg.span.start, end: edge.seg.span.start + first[0].length, text: opStr }] }
+        return segmentEdits(ctx, edge, [{ start: edge.seg.span.start, end: edge.seg.span.start + first[0].length, text: opStr }])
       }
       const quoted = isQuotedLabel(edge.seg.label)
       const content = quoted ? edge.seg.label!.slice(1, -1) : edge.seg.label
       const label = content !== null ? `|${printEdgeLabel(content, quoted)}|` : ''
-      return { edits: [{ start: edge.seg.span.start, end: edge.seg.span.end, text: `${opStr}${label}` }] }
+      return segmentEdits(ctx, edge, [{ start: edge.seg.span.start, end: edge.seg.span.end, text: `${opStr}${label}` }])
     }
 
     case 'setDirection': {
@@ -683,7 +702,7 @@ export function compileFlowchartOp(ctx: FlowOpContext, op: FlowchartOp): OpResul
     case 'setEdgeColor': {
       const edge = findEdge(graph, op.edgeId)
       if (!edge) return null
-      // linkStyle addresses edges by render index (== document order)
+      // linkStyle addresses edges by source order, not SVG paint order.
       let linkStmt: FlowStmt | undefined
       let shared = false
       for (const stmt of [...graph.statements.values()].flat()) {

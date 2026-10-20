@@ -23,8 +23,8 @@ function esc(s: string): string {
 
 /**
  * Correlate mermaid's rendered flowchart SVG with the semantic graph.
- * Strategy: id conventions first (`flowchart-<id>-N`, `L_<src>_<tgt>_N`),
- * then order matching as a fallback. Anything unmatched degrades to view-only.
+ * Edge identity comes from Mermaid's ids, never SVG paint order (clusters
+ * reorder paths). Only paths without any identity can use an order fallback.
  */
 export function correlateFlowchart(svg: SVGSVGElement, graph: FlowGraph): Correlation {
   const nodes = new Map<string, SVGGElement>()
@@ -58,26 +58,55 @@ export function correlateFlowchart(svg: SVGSVGElement, graph: FlowGraph): Correl
 
   const edgeEls = [...svg.querySelectorAll<SVGElement>('.edgePaths > path, path.flowchart-link')]
   const claimedEdges = new Set<Element>()
+  const originalIds = new Map<SVGElement, string>()
+  const claimEdge = (entityId: string, el: SVGElement) => {
+    edges.set(entityId, el)
+    claimedEdges.add(el)
+    el.setAttribute('data-mw-entity', entityId)
+  }
+  // Reserve explicit ids before matching anonymous parallel edges. Mermaid 11
+  // prefixes the DOM id with diagramId but keeps the original in data-id.
   for (const edge of graph.edges) {
-    const re = new RegExp(`^L[-_]${esc(edge.source)}[-_]${esc(edge.target)}[-_]\\d+`)
-    const el = edgeEls.find((e) => !claimedEdges.has(e) && e.id === edge.seg.edgeId)
-      ?? edgeEls.find((e) => !claimedEdges.has(e) && re.test(e.id))
+    const id = edge.seg.edgeId
+    if (!id) continue
+    const el = edgeEls.find((e) => !claimedEdges.has(e) && (
+      e.getAttribute('data-id') === id || e.id === id || e.id === `${svg.id}-${id}`
+    ))
     if (el) {
-      edges.set(edge.entityId, el)
-      claimedEdges.add(el)
-      el.setAttribute('data-mw-entity', edge.entityId)
+      claimEdge(edge.entityId, el)
+      originalIds.set(el, id)
+    }
+  }
+  const pairs = new Map<string, typeof graph.edges>()
+  for (const edge of graph.edges) {
+    if (edge.seg.edgeId) continue
+    const key = JSON.stringify([edge.source, edge.target])
+    const group = pairs.get(key) ?? []
+    group.push(edge)
+    pairs.set(key, group)
+  }
+  for (const group of pairs.values()) {
+    const { source, target } = group[0]
+    const re = new RegExp(`(^|-)L[-_]${esc(source)}[-_]${esc(target)}[-_](\\d+)$`)
+    const candidates = edgeEls.filter(e => !claimedEdges.has(e)).flatMap(el => {
+      const match = re.exec(el.id || el.getAttribute('data-id') || '')
+      return match ? [{ el, order: Number(match[2]), id: match[0].replace(/^-/, '') }] : []
+    }).sort((a, b) => a.order - b.order)
+    // Counts must agree: a partially rendered parallel set is ambiguous.
+    // Mermaid 11's suffixes can have gaps (e.g. 0, 2), so use numeric rank.
+    if (candidates.length === group.length) {
+      group.forEach((edge, i) => {
+        claimEdge(edge.entityId, candidates[i].el)
+        originalIds.set(candidates[i].el, candidates[i].id)
+      })
     }
   }
   const unmatchedEdges = graph.edges.filter((e) => !edges.has(e.entityId))
-  const unclaimedEdgeEls = edgeEls.filter((e) => !claimedEdges.has(e))
-  if (unmatchedEdges.length === unclaimedEdgeEls.length) {
-    unmatchedEdges.forEach((e, i) => {
-      edges.set(e.entityId, unclaimedEdgeEls[i])
-      unclaimedEdgeEls[i].setAttribute('data-mw-entity', e.entityId)
-    })
-  } else {
-    for (const e of unmatchedEdges) failed.push(e.entityId)
+  const anonymousEls = edgeEls.filter(e => !claimedEdges.has(e) && !e.id && !e.getAttribute('data-id'))
+  if (unmatchedEdges.length === anonymousEls.length) {
+    unmatchedEdges.forEach((edge, i) => claimEdge(edge.entityId, anonymousEls[i]))
   }
+  for (const edge of graph.edges) if (!edges.has(edge.entityId)) failed.push(edge.entityId)
 
   // subgraphs render as clusters; their ids embed the subgraph id
   for (const sg of graph.subgraphs) {
@@ -90,21 +119,28 @@ export function correlateFlowchart(svg: SVGSVGElement, graph: FlowGraph): Correl
     }
   }
 
-  // edge labels render in edge order; mermaid emits one .edgeLabel per edge
+  // Mermaid 11 puts the original edge id on the inner g.label[data-id].
+  // Label containers are reordered with clusters just like paths. Correlate
+  // through the already resolved path, including explicit edge ids.
   const labelEls = [...svg.querySelectorAll<SVGGElement>('.edgeLabels > .edgeLabel')]
-  if (labelEls.length === graph.edges.length) {
-    graph.edges.forEach((e, i) => {
-      edgeLabels.set(e.entityId, labelEls[i])
-      labelEls[i].setAttribute('data-mw-entity', e.entityId)
-    })
-  } else {
-    const labeled = graph.edges.filter((e) => e.label !== null && e.label !== '')
-    if (labelEls.length === labeled.length) {
-      labeled.forEach((e, i) => {
-        edgeLabels.set(e.entityId, labelEls[i])
-        labelEls[i].setAttribute('data-mw-entity', e.entityId)
-      })
+  const labelsById = new Map<string, SVGGElement>()
+  for (const label of labelEls) {
+    for (const el of [label, ...label.querySelectorAll('[data-id], [id]')]) {
+      for (const id of [el.id, el.getAttribute('data-id')]) {
+        if (id) labelsById.set(id, label)
+      }
     }
+  }
+  const claimedLabels = new Set<Element>()
+  for (const [entityId, path] of edges) {
+    const ids = [path.getAttribute('data-id'), path.id,
+      originalIds.get(path),
+      svg.id && path.id.startsWith(`${svg.id}-`) ? path.id.slice(svg.id.length + 1) : '']
+    const label = ids.map(id => id ? labelsById.get(id) : undefined).find(el => el && !claimedLabels.has(el))
+    if (!label) continue
+    edgeLabels.set(entityId, label)
+    claimedLabels.add(label)
+    label.setAttribute('data-mw-entity', entityId)
   }
 
   return { nodes, edges, edgeLabels, failed }

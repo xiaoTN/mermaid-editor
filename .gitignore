@@ -3,3 +3,6 @@ dist/
 *.log
 .DS_Store
 out/
+!/dist/
+/dist/*
+!/dist/mermaid-editor.exe

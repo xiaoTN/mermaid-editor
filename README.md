@@ -1,3 +1,32 @@
+本项目 fork 自 [inkeep/mermaid-wysiwyg](https://github.com/inkeep/mermaid-wysiwyg)（MIT），核心解析和撤销机制来自原项目；中文 ID、改边端点、linkStyle 重算、Windows 外壳等为本项目新增。
+
+## Windows 桌面版 0.1.0
+
+双击 `dist/mermaid-editor.exe` 即可运行，无需安装程序。需要已安装 Microsoft Edge WebView2 Runtime；缺少时会显示中文说明。
+
+- 打开、保存、另存为使用系统对话框，支持 `.mmd`、`.mermaid`、`.md`、`.txt`；支持拖入文件，以及把文件作为 exe 的启动参数。
+- `Ctrl+O` 打开，`Ctrl+S` 保存，`Ctrl+Shift+S` 另存为。标题中的 ` *` 表示尚未保存；关闭时可选保存、不保存或取消。
+- Markdown 只编辑第一个完整 Mermaid 围栏代码块，保留其余原始字节；保存时重新读取正文，保留期间发生的块外修改。其他格式按 UTF-8 原样读写，保留 BOM、CRLF、tab、注释及行尾空格。
+- 打开真实路径时，草稿按路径和完整打开内容的 SHA-256 匹配；顶部提供恢复/丢弃，默认仍使用磁盘内容。直接启动自动恢复最近草稿。选择“不保存”关闭后仍可在下次启动恢复草稿。
+- 数据位于 `%LOCALAPPDATA%\mermaid-editor`，WebView2 数据位于其 `WebView2` 子目录，日志为 `mermaid-editor.log`，按 1 MiB 轮转。程序内嵌前端，启动时释放单个页面到数据目录，映射固定本地域名以持久保存草稿。
+
+在 Windows PowerShell 中构建（复用 `apps/playground`）：
+
+```powershell
+pnpm --filter playground build
+Copy-Item apps\playground\dist\index.html cmd\mermaid-editor\index.html -Force
+$env:GOTOOLCHAIN='go1.24.4'; $env:CGO_ENABLED='0'; $env:GOOS='windows'; $env:GOARCH='amd64'
+go build -trimpath -ldflags "-s -w -H windowsgui" -o dist\mermaid-editor.exe .\cmd\mermaid-editor
+go vet ./...
+go test ./...
+pnpm -r run test
+npx tsx tools\cases\run-cases.mts
+```
+
+也可执行 `tools\windows\build.ps1` 完成构建和 Go 检查；附加 `-CopyToDesktop` 会复制为桌面的 `Mermaid编辑器.exe`。`node tools/windows/smoke.mjs` 通过独立数据目录启动实际 exe 并验证前端与原生文件桥，不影响日常草稿。
+
+外壳的 WebView2 消息循环、派发队列看门狗、单实例、用户数据目录选择、日志及剪贴板基础代码复制自 `D:\Projects\gitdash`；本项目新增文件桥、关闭拦截和文件拖入。第三方许可证保留在 `third_party/go-webview2/LICENSE`，根目录 `LICENSE` 保持不变。
+
 <div align="center">
 
 # mermaid-wysiwyg

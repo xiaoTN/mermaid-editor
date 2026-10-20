@@ -1,4 +1,4 @@
-export interface EditorFile { code: string; name: string; path?: string }
+export interface EditorFile { code: string; name: string; path?: string; source?: string; untitled?: boolean }
 
 export interface DraftStorage {
   readonly length: number
@@ -59,7 +59,7 @@ export class DraftStore {
 
   async open(file: EditorFile): Promise<DraftSession> {
     const path = file.path || file.name
-    const baseHash = await hashContent(file.code)
+    const baseHash = await hashContent(file.source ?? file.code)
     const matches = this.entries().filter(draft => draft.path === path)
     const candidate = matches.find(draft => draft.baseHash === baseHash) ?? matches[0]
     return new DraftSession(this, { ...file, path }, baseHash, candidate)
@@ -67,7 +67,8 @@ export class DraftStore {
 
   resume(): DraftSession | null {
     const draft = this.entries()[0]
-    return draft ? new DraftSession(this, { code: draft.baseCode, name: draft.name, path: draft.path },
+    return draft ? new DraftSession(this, { code: draft.baseCode, name: draft.name, path: draft.path,
+      source: draft.source, untitled: draft.untitled },
       draft.baseHash, undefined, draft.code) : null
   }
 
@@ -86,6 +87,10 @@ export class DraftStore {
   remove(path: string, hash: string): void {
     try { this.storage?.removeItem(draftKey(path, hash)) } catch { /* Editing remains available without storage. */ }
   }
+
+  removeFile(path: string): void {
+    for (const draft of this.entries()) if (draft.path === path) this.remove(path, draft.baseHash)
+  }
 }
 
 /** File opening only offers a candidate. The host decides whether to mount a prompt. */
@@ -98,7 +103,10 @@ export class DraftSession {
 
   get code(): string { return this.current }
   get name(): string { return this.file.name }
+  get baseCode(): string { return this.file.code }
   get path(): string { return this.file.path }
+  get snapshot(): EditorFile { return { ...this.file, code: this.current } }
+  get dirty(): boolean { return this.current !== this.file.code }
   get prompt(): DraftPrompt | null {
     return this.candidate ? { key: 'draft.found', restore: 'draft.restore', discard: 'draft.discard',
       changedOutside: this.candidate.baseHash !== this.baseHash } : null
@@ -130,11 +138,14 @@ export class DraftSession {
   }
 
   /** Call only after the file adapter reports success, with the exact saved snapshot. */
-  async saved(savedCode: string): Promise<void> {
-    const hash = await hashContent(savedCode)
+  async saved(savedCode: string, savedFile?: EditorFile): Promise<void> {
+    const hash = await hashContent(savedFile?.source ?? savedCode)
     this.discard()
-    this.store.remove(this.path, this.baseHash)
-    this.file = { ...this.file, code: savedCode }
+    this.store.removeFile(this.path)
+    if (savedFile?.path) this.store.removeFile(savedFile.path)
+    this.file = { ...this.file, ...savedFile, path: savedFile?.path ?? this.path, code: savedCode,
+      source: savedFile ? savedFile.source : this.file.source,
+      untitled: savedFile ? !!savedFile.untitled : this.file.untitled }
     this.baseHash = hash
     if (this.current !== savedCode) this.store.write(this.file, hash, this.current)
   }

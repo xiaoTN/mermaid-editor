@@ -1,0 +1,67 @@
+%%{init: {"theme":"base","fontFamily":"PingFang SC, sans-serif","flowchart":{"htmlLabels":false,"curve":"linear","nodeSpacing":22,"rankSpacing":26,"wrappingWidth":200,"subGraphTitleMargin":{"top":12,"bottom":12}}}}%%
+flowchart TB
+    entry["放我家 · 创建任务"]
+    subgraph orch["Louvre 场景编排"]
+        layout["家具布局"]
+        hard["硬装准备"]
+        building["硬装建模（按需）"]
+        goods["商品推荐"]
+        wardrobe["定制衣柜"]
+        camera["相机与灯光"]
+        layout --> building
+        layout --> goods
+        layout --> wardrobe
+        hard --> goods
+        hard --> wardrobe
+        building --> camera
+        subgraph decor["自动装饰"]
+            direction LR
+            select["选品与布局"]
+            tabletop["台面摆件"]
+            bedside["床头灯具"]
+            central["中央灯具"]
+            wallart["挂画"]
+            floor["地面绿植"]
+            slippers["拖鞋"]
+            result["装饰结果"]
+            select --> tabletop & bedside & central & wallart & floor & slippers
+            tabletop & bedside & central & wallart & floor & slippers --> result
+        end
+        goods --> decor
+        wardrobe --> decor
+        assembly["合并完整场景"]
+        decor --> assembly
+        camera --> assembly
+        hard --> assembly
+        dispatch["按机位分派渲染任务"]
+        assembly --> dispatch
+    end
+    entry --> layout & hard
+    queue[("Redis 任务队列")]
+    dispatch --> queue
+
+    subgraph render["云渲染"]
+        claim["领取任务"]
+        resources["下载资源 · 复用缓存"]
+        scene["组装模型与材质"]
+        settings["配置灯光、相机和画质"]
+        image["渲染出图 · 后处理"]
+        primary["先回传渲染图"]
+        annotation["再生成并回传商品标注"]
+        claim --> resources --> scene --> settings --> image --> primary --> annotation
+    end
+    queue --> claim
+    ai["AI 效果处理"]
+    output["业务展示"]
+    primary --> ai --> output
+    annotation --> output
+
+    classDef outside fill:#F3F5F7,stroke:#B8C2CB,color:#586875,stroke-width:1px;
+    classDef decoration fill:#E8F5F0,stroke:#358B70,color:#194B3D,stroke-width:1.5px;
+    classDef cloud fill:#EAF2FC,stroke:#4079B5,color:#214E7E,stroke-width:1.5px;
+    class entry,layout,hard,building,goods,wardrobe,camera,assembly,dispatch,queue,ai,output outside;
+    class select,tabletop,bedside,central,wallart,floor,slippers,result decoration;
+    class claim,resources,scene,settings,image,primary,annotation cloud;
+    style orch fill:#FAFBFC,stroke:#B8C2CB,stroke-width:1px,color:#586875;
+    style decor fill:#F6FBF8,stroke:#358B70,stroke-width:2px,color:#194B3D;
+    style render fill:#F7FAFE,stroke:#4079B5,stroke-width:2px,color:#214E7E;

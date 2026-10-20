@@ -42,7 +42,7 @@ export interface FlowEdge {
   sourceRef: NodeRef
   targetRef: NodeRef
   label: string | null
-  /** order in document (== mermaid render order) */
+  /** source order (Mermaid's linkStyle index, independent of SVG paint order) */
   order: number
 }
 

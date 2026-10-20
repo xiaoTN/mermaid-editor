@@ -2,6 +2,26 @@ import { describe, expect, it } from 'vitest'
 import { MermaidWysiwygEditor } from '../src'
 
 describe('画布工具栏', () => {
+  it('双向 & 展开的单条边改线型，定义、CRLF、tab、注释及 linkStyle 字节保留', () => {
+    const code = 'flowchart LR\r\n\tA[甲] & B(乙) -.  文字  .-> C{丙} & D[丁]; X;  %% 保留\r\n\tlinkStyle 0,1,2,3 stroke:red  \r\n'
+    const editor = new MermaidWysiwygEditor({ code })
+    const id = 'edge:B->D#0'
+    editor.dispatch({ type: 'setEdgeStyle', edgeId: id, line: 'thick', preserveLabelForm: true })
+    expect(editor.code).toBe(code.replace('A[甲] & B(乙) -.  文字  .-> C{丙} & D[丁]',
+      'A[甲] -.  文字  .-> C{丙}\r\n\tA[甲] -.  文字  .-> D[丁]\r\n\tB(乙) -.  文字  .-> C{丙}\r\n\tB(乙) ==  文字  ==> D[丁]'))
+    expect(editor.result.flowchart!.edges.map(e => [e.source, e.target, e.seg.line])).toEqual([
+      ['A', 'C', 'dotted'], ['A', 'D', 'dotted'], ['B', 'C', 'dotted'], ['B', 'D', 'thick'],
+    ])
+    const after = editor.code
+    editor.undo(); expect(editor.code).toBe(code)
+    editor.redo(); expect(editor.code).toBe(after)
+  })
+  it('给 & 行选择已有线型不会拆行或产生撤销记录', () => {
+    const code = 'flowchart LR\r\n\tA --> B & C  \r\n'
+    const editor = new MermaidWysiwygEditor({ code })
+    expect(editor.dispatch({ type: 'setEdgeStyle', edgeId: 'edge:A->B#0', line: 'solid', preserveLabelForm: true })?.edits).toEqual([])
+    expect(editor.code).toBe(code); expect(editor.canUndo).toBe(false)
+  })
   it('重复拖出同起终点和箭头的边时拒绝，代码与撤销历史保持原样', () => {
     const code = 'flowchart TD\r\n\tC[扣减库存] --> D[通知补货]  %% 保留\r\n'
     const editor = new MermaidWysiwygEditor({ code })

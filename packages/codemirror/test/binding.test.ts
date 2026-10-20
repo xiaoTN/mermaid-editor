@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import '../../core/test/dom-layout'
 import { describe, expect, it } from 'vitest'
 import { MermaidWysiwygEditor } from '@inkeep/mermaid-wysiwyg-core'
 import { MermaidCodeMirror } from '../src'

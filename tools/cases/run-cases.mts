@@ -10,6 +10,8 @@ import {
 } from '../../packages/core/src/index.ts'
 import { assertAllowedChanges, assertOnlyReplacesLine, lineDiff, type AllowedChange } from './line-diff.mts'
 import { DraftStore, draftKey, hashContent, type DraftStorage } from '../../apps/playground/src/draft.ts'
+import { JSDOM } from '../../packages/dom/node_modules/jsdom/lib/api.js'
+import { createDomCases } from './dom-cases.mts'
 
 // 仅写入仓库根目录的 out/cases；testdata 中的样例、规则和校验器始终只读。
 const root = fileURLToPath(new URL('../../', import.meta.url))
@@ -17,7 +19,7 @@ const samples = join(root, 'testdata', 'samples')
 const output = join(root, 'out', 'cases')
 // 同步副本在仓库根目录，testdata/ 内的历史规则只读。
 const expectedCaseNumbers = new Set([...readFileSync(join(root, 'CASES.md'), 'utf8')
-  .matchAll(/^(?:\|\s*)?(\d+b?)(?:\s*\||\.)/gm)].map(match => match[1]))
+  .matchAll(/^(?:\|\s*|- )?(\d+[a-d]?)(?:\s*\||\.|\s)/gm)].map(match => match[1]))
 mkdirSync(output, { recursive: true })
 
 function check(condition: unknown, message: string): asserts condition {
@@ -652,6 +654,16 @@ for (const [number, note, run] of draftChecks) {
     passed++; print(`用例 ${number}：通过（${note}）`)
   } catch (error) { failed++; print(`用例 ${number}：失败（${message(error)}）`) }
 }
+const dom = new JSDOM('<!doctype html><body></body>')
+try {
+  for (const [number, note, run] of createDomCases(join(root, 'packages/core/test/fixtures'))) {
+    try {
+      check(expectedCaseNumbers.has(number), `最新 CASES.md 缺少用例 ${number}`)
+      for (const locale of ['zh-CN', 'en'] as const) { setLocale(locale); run(dom.window.document) }
+      passed++; print(`用例 ${number}：通过（${note}；高亮线、菜单及实际拖动观感：界面验）`)
+    } catch (error) { failed++; print(`用例 ${number}：失败（${message(error)}）`) }
+  }
+} finally { dom.window.close() }
 print(`合计：通过 ${passed}，失败 ${failed}；退出码 ${failed}`)
 writeFileSync(join(output, 'summary.txt'), report.join('\n') + '\n', 'utf8')
 process.exitCode = failed
