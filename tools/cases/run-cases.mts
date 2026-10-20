@@ -9,11 +9,15 @@ import {
   type EditorOp, type FlowEdge, type OpResult,
 } from '../../packages/core/src/index.ts'
 import { assertAllowedChanges, assertOnlyReplacesLine, lineDiff, type AllowedChange } from './line-diff.mts'
+import { DraftStore, draftKey, hashContent, type DraftStorage } from '../../apps/playground/src/draft.ts'
 
 // 仅写入仓库根目录的 out/cases；testdata 中的样例、规则和校验器始终只读。
 const root = fileURLToPath(new URL('../../', import.meta.url))
 const samples = join(root, 'testdata', 'samples')
 const output = join(root, 'out', 'cases')
+// 同步副本在仓库根目录，testdata/ 内的历史规则只读。
+const expectedCaseNumbers = new Set([...readFileSync(join(root, 'CASES.md'), 'utf8')
+  .matchAll(/^(?:\|\s*)?(\d+b?)(?:\s*\||\.)/gm)].map(match => match[1]))
 mkdirSync(output, { recursive: true })
 
 function check(condition: unknown, message: string): asserts condition {
@@ -556,6 +560,97 @@ const languageChecks: [string, string, () => void | Promise<void>][] = [
 for (const [number, note, run] of languageChecks) {
   try { await run(); passed++; print(`用例 ${number}：通过（${note}）`) }
   catch (error) { failed++; print(`用例 ${number}：失败（${message(error)}）`) }
+}
+function memoryDrafts() {
+  const data = new Map<string, string>()
+  const storage: DraftStorage = {
+    get length() { return data.size }, key: index => [...data.keys()][index] ?? null,
+    getItem: key => data.get(key) ?? null, setItem: (key, value) => { data.set(key, value) },
+    removeItem: key => { data.delete(key) },
+  }
+  return { data, storage, drafts: new DraftStore(storage) }
+}
+
+const draftFile = { name: '订单.mmd', path: 'D:/订单/订单.mmd', code: 'flowchart LR\r\n\tA --> B  \r\n' }
+const draftChecks: [string, string, () => void | Promise<void>][] = [
+  ['35', '最近草稿字节恢复、恢复文案及保存清理通过；浏览器提示由 dom vitest 覆盖', async () => {
+    const { drafts, storage } = memoryDrafts()
+    check(drafts.resume() === null, '无草稿时不应恢复')
+    const session = await drafts.open(draftFile)
+    session.edit(draftFile.code.replace('B', 'C'))
+    const resumed = new DraftStore(storage).resume()
+    check(resumed?.code === session.code && resumed.name === draftFile.name, '未恢复最近草稿原始字节')
+    check(messages[getLocale()]['draft.restored'] === (getLocale() === 'en' ? 'Restored your unsaved edits' : '已恢复上次未保存的编辑'), '恢复提示文案错误')
+    await resumed.saved(resumed.code)
+    check(new DraftStore(storage).resume() === null, '保存成功后仍有草稿')
+  }],
+  ['36', '桌面接口：打开保留文件内容，提示不操作、恢复、丢弃分别通过；预览打开不接提示栏', async () => {
+    const { data, drafts } = memoryDrafts()
+    const initial = await drafts.open(draftFile); initial.edit('flowchart LR\r\n\tA --> C  \r\n')
+    const before = JSON.stringify([...data])
+    const opened = await drafts.open(draftFile)
+    check(opened.code === draftFile.code && opened.prompt?.key === 'draft.found', '打开未保留文件或缺少提示')
+    check(opened.prompt.restore === 'draft.restore' && opened.prompt.discard === 'draft.discard', '缺少恢复/丢弃动作')
+    opened.edit(draftFile.code)
+    check(JSON.stringify([...data]) === before && opened.code === draftFile.code, '未操作提示却改变了文件或草稿')
+    check(opened.restore() === initial.code && !opened.prompt, '恢复操作错误')
+    const discard = await drafts.open(draftFile); discard.discard()
+    check(discard.code === draftFile.code && !discard.prompt && !drafts.resume(), '丢弃操作错误')
+  }],
+  ['37', '桌面接口：同路径 SHA-256 不符提示外部修改，不自动覆盖', async () => {
+    const { data, drafts } = memoryDrafts()
+    const session = await drafts.open(draftFile); session.edit('flowchart LR\n A --> C')
+    check(data.has(draftKey(draftFile.path, await hashContent(draftFile.code))), '草稿键缺少路径与 SHA-256')
+    const file = { ...draftFile, code: draftFile.code.replaceAll('\r\n', '\n') }
+    const opened = await drafts.open(file)
+    check(opened.prompt?.changedOutside && opened.code === file.code, '哈希不符未提示或覆盖了文件')
+    opened.restore()
+    check(data.size === 1 && data.has(draftKey(file.path, await hashContent(file.code))), '恢复后草稿未使用新打开内容的哈希')
+  }],
+  ['38', '桌面接口：同名不同路径草稿隔离，中英文五个 key 及非空值一致', async () => {
+    const { drafts } = memoryDrafts()
+    const first = await drafts.open(draftFile); first.edit('flowchart LR\n A --> C')
+    const other = { ...draftFile, path: 'D:/其他/订单.mmd' }
+    const second = await drafts.open(other)
+    check(!second.prompt && second.code === other.code, '不同路径误用草稿')
+    second.edit('flowchart LR\n X --> Y')
+    check((await drafts.open(draftFile)).restore() === first.code, '第一个路径草稿串用')
+    check((await drafts.open(other)).restore() === second.code, '第二个路径草稿串用')
+    for (const key of ['draft.found', 'draft.restore', 'draft.discard', 'draft.restored', 'draft.changedOutside']) {
+      check(listKeys().includes(key) && messages[getLocale()][key as keyof typeof messages.en].trim(), `缺少草稿文案 ${key}`)
+    }
+  }],
+  ['39', '新增连线全图查重，含子图、& 展开；代码与历史不变并发出 toast.dupEdge', () => {
+    for (const token of ['-->', '-.->', '==>', '--o', '--x', '---', '~~~']) {
+      const code = `flowchart LR\r\n\tsubgraph group\r\n\t\tA & C ${token} B & D  %% 保留\r\n\tend\r\n`
+      const editor = new MermaidWysiwygEditor({ code })
+      const existing = edge(editor, 'C', 'D')
+      const notices: unknown[] = []
+      editor.on('warning', notice => notices.push(notice))
+      const result = editor.dispatch({ type: 'connect', source: 'C', target: 'D', line: existing.seg.line, arrowEnd: existing.seg.arrowEnd })
+      check(result?.edits.length === 0 && result.warnings?.[0]?.key === 'toast.dupEdge' && notices.length === 1, '没有拦下重复边或未提示')
+      check(editor.code === code && !editor.canUndo, '拒绝重复边改变了代码或历史')
+    }
+  }],
+  ['40', '跨行改起点/终点全图查重，代码与撤销/重做记录不变并提示', () => {
+    for (const end of ['source', 'target'] as const) {
+      const code = end === 'target' ? 'flowchart LR\r\n\tA --> B  \r\n\tA --> C\r\n' : 'flowchart LR\r\n\tA --> B  \r\n\tC --> B\r\n'
+      const editor = new MermaidWysiwygEditor({ code })
+      dispatch(editor, { type: 'addNode' }); editor.undo()
+      const notices: unknown[] = []
+      editor.on('warning', notice => notices.push(notice))
+      const result = editor.dispatch({ type: 'retargetEdge', edgeId: graph(editor).edges[1].entityId, end, nodeId: end === 'target' ? 'B' : 'A' })
+      check(result?.edits.length === 0 && result.warnings?.[0]?.key === 'toast.dupEdge' && notices.length === 1, '跨行重复边未拒绝或无提示')
+      check(editor.code === code && !editor.canUndo && editor.canRedo, '拒绝重复边改变了字节或历史')
+    }
+  }],
+]
+for (const [number, note, run] of draftChecks) {
+  try {
+    check(expectedCaseNumbers.has(number), `最新 CASES.md 缺少用例 ${number}`)
+    for (const locale of ['zh-CN', 'en'] as const) { setLocale(locale); await run() }
+    passed++; print(`用例 ${number}：通过（${note}）`)
+  } catch (error) { failed++; print(`用例 ${number}：失败（${message(error)}）`) }
 }
 print(`合计：通过 ${passed}，失败 ${failed}；退出码 ${failed}`)
 writeFileSync(join(output, 'summary.txt'), report.join('\n') + '\n', 'utf8')

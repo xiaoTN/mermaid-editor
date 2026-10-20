@@ -179,12 +179,12 @@ describe('改边端点', () => {
     history(editor, code, code.replace('A & B e1@-.->|走| C & D', 'A e1@-.->|走| C\n  A e1@-.->|走| D\n  B e1@-.->|走| C\n  ' + (end === 'source' ? 'F e1@-.->|走| D' : 'B e1@-.->|走| F')))
   })
 
-  it('改成已有平行边时返回正确出现序号，样式随各条边保留', () => {
+  it('拒绝改成跨行已有平行边，全部样式和历史保持原样', () => {
     const code = 'flowchart LR\n  A --> F\n  A & B --> C\n  A --> F\n  linkStyle 0,3 stroke:blue\n  linkStyle 1,2 stroke:green\n'
     const editor = new MermaidWysiwygEditor({ code })
-    expect(retarget(editor, 'A', 'C', 'F').created).toEqual(['edge:A->F#1'])
-    expect(editor.selection).toEqual(['edge:A->F#1'])
-    history(editor, code, code.replace('A & B --> C', 'A --> F\n  B --> C'))
+    expect(retarget(editor, 'A', 'C', 'F')).toEqual({ edits: [], warnings: [{ key: 'toast.dupEdge' }] })
+    expect(editor.code).toBe(code)
+    expect(editor.canUndo).toBe(false)
   })
 
   it.each([

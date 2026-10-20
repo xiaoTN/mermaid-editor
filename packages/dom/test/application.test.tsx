@@ -2,7 +2,10 @@
 import React, { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { createHash } from 'node:crypto'
 import App from '../../../apps/playground/src/App'
+import { DraftStore } from '../../../apps/playground/src/draft'
+import { DraftNotice } from '../../../apps/playground/src/DraftNotice'
 import { browserFiles, type FileAccess } from '../../../apps/playground/src/files'
 import { MermaidCanvasView, setLocale, t } from '../src'
 
@@ -23,6 +26,8 @@ const open = async (name = 'orders.mmd') => act(async () => {
 beforeEach(() => {
   localStorage.clear(); setLocale('zh-CN')
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
+  vi.stubGlobal('crypto', { subtle: { digest: async (_: string, data: Uint8Array) =>
+    new Uint8Array(createHash('sha256').update(data).digest()).buffer } })
   vi.stubGlobal('CSS', { escape: (s: string) => s.replace(/[^\w-]/g, c => `\\${c}`) })
   host = document.createElement('div'); document.body.append(host); root = createRoot(host)
 })
@@ -52,16 +57,18 @@ describe('应用线框和文件交互', () => {
   })
   it('恢复草稿原始字节，画布修改自动保存，撤销可恢复，重载仍有草稿', async () => {
     const draft = { code: 'flowchart TD\r\n\tA[甲] --> B[乙]  %% 保留\r\n', name: '原始.mmd' }
-    localStorage.setItem('mermaid-editor.draft', JSON.stringify(draft))
+    const drafts = new DraftStore()
+    const session = await drafts.open({ ...draft, code: '' }); session.edit(draft.code)
     await mount(); await click('tb.addGroup')
-    const changed = JSON.parse(localStorage.getItem('mermaid-editor.draft')!)
+    const changed = drafts.resume()!
     expect(changed.name).toBe(draft.name)
     expect(changed.code).toContain('subgraph')
     await click('tb.undo')
-    expect(JSON.parse(localStorage.getItem('mermaid-editor.draft')!)).toEqual(draft)
+    expect(drafts.resume()).toMatchObject(draft)
     await act(async () => root.unmount()); root = createRoot(host); await mount()
     expect(host.querySelector('.titlebar')?.textContent).toContain(draft.name)
-    expect(JSON.parse(localStorage.getItem('mermaid-editor.draft')!)).toEqual(draft)
+    expect(drafts.resume()).toMatchObject(draft)
+    expect(host.querySelector('.app-toast')?.textContent).toBe(t('draft.restored'))
   })
   it('打开沿用文件名，保存原字节；初次打开 fit，之后手动缩放不被编辑打断', async () => {
     const render = MermaidCanvasView.prototype.render
@@ -89,30 +96,105 @@ describe('应用线框和文件交互', () => {
     expect(fit).toHaveBeenCalledTimes(1)
     expect(host.querySelector('.titlebar')?.textContent).toContain(opened.name)
     await click('tb.save'); expect(fileAccess.save).toHaveBeenCalledWith(opened)
-    expect(JSON.parse(localStorage.getItem('mermaid-editor.draft')!)).toEqual({ code: opened.code, name: opened.name })
+    expect((await new DraftStore().open(opened)).prompt).toBeNull()
+    expect(new DraftStore().resume()?.name).toBe('图表.mmd')
   })
   it.each(['zh-CN', 'en'] as const)('%s 打开保存失败和复制提示用产品 key，原因原文不翻译', async locale => {
     setLocale(locale)
     const fileAccess: FileAccess = { open: async () => { throw new Error('EACCES: denied') }, save: async () => { throw new Error('disk full') } }
     vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText: vi.fn(async () => {}) } })
     await mount(fileAccess)
-    const before = localStorage.getItem('mermaid-editor.draft')
+    await click('tb.addGroup')
+    const before = new DraftStore().resume()
+    expect(before).not.toBeNull()
     await open()
     expect(host.querySelector('.app-toast')?.textContent).toBe(t('err.open', { reason: 'EACCES: denied' }))
     await click('tb.save')
     expect(host.querySelector('.app-toast')?.textContent).toBe(t('err.save', { reason: 'disk full' }))
-    expect(localStorage.getItem('mermaid-editor.draft')).toBe(before)
+    expect(new DraftStore().resume()).toEqual(before)
     await click('tb.copy')
     expect(host.querySelector('.app-toast')?.textContent).toBe(t('toast.copied'))
   })
   it('非流程图只读预览，禁止节点和分组操作', async () => {
-    localStorage.setItem('mermaid-editor.draft', JSON.stringify({ code: 'classDiagram\n class A', name: 'classes.mmd' }))
+    const session = await new DraftStore().open({ code: '', name: 'classes.mmd' })
+    session.edit('classDiagram\n class A')
     await mount()
     expect(host.querySelector('.mw-readonly')).not.toBeNull()
     expect(host.querySelector('.mw-readonly-hint')?.textContent).toBe(t('toast.readonly'))
     expect(button('tb.addNode').disabled).toBe(true)
     expect(button('tb.addGroup').disabled).toBe(true)
     expect(host.querySelector('.mw-popover')).toBeNull()
+  })
+  it.each(['zh-CN', 'en'] as const)('%s 刷新自动恢复并提示，保存成功清除，再重开不恢复', async locale => {
+    setLocale(locale)
+    const fileAccess: FileAccess = { open: vi.fn(), save: vi.fn(async () => {}) }
+    const drafts = new DraftStore()
+    await mount(fileAccess)
+    expect(host.querySelector('.app-toast')).toBeNull()
+    expect(drafts.resume()).toBeNull()
+    await click('tb.addGroup')
+    const draft = drafts.resume()!
+    expect(draft.code).toContain('subgraph')
+    await act(async () => root.unmount()); root = createRoot(host); await mount(fileAccess)
+    expect(host.querySelector('.app-toast')?.textContent).toBe(t('draft.restored'))
+    expect(host.querySelector('.cm-content')?.textContent).toContain('subgraph')
+    await click('tb.save')
+    expect(drafts.resume()).toBeNull()
+    expect(host.querySelector('.app-toast')).toBeNull()
+    await act(async () => root.unmount()); root = createRoot(host); await mount(fileAccess)
+    expect(host.querySelector('.app-toast')).toBeNull()
+    expect(drafts.resume()).toBeNull()
+  })
+  it('浏览器打开只显示文件内容，不接草稿提示，编辑后才替换该文件草稿', async () => {
+    const file = { name: 'orders.mmd', code: 'flowchart LR\r\n\tA --> B  \r\n' }
+    const drafts = new DraftStore()
+    const old = await drafts.open(file); old.edit('flowchart LR\n X --> Y')
+    await mount({ open: async () => file, save: async () => {} }); await open()
+    expect(host.querySelector('.cm-content')?.textContent).toContain('A --> B')
+    expect(host.querySelector('.cm-content')?.textContent).not.toContain('X --> Y')
+    expect(host.querySelector('.draft-notice')).toBeNull()
+    expect((await drafts.open(file)).restore()).toBe(old.code)
+    await click('tb.addGroup')
+    expect(drafts.resume()?.code).toContain('A --> B')
+    expect(drafts.resume()?.code).not.toContain('X --> Y')
+  })
+  it('初始 SHA-256 尚未完成就编辑并保存，成功后不重新产生已保存草稿', async () => {
+    let completeHash!: () => Promise<void>
+    const digest = crypto.subtle.digest
+    vi.spyOn(crypto.subtle, 'digest').mockImplementationOnce((algorithm, data) => new Promise(resolve => {
+      completeHash = async () => resolve(await digest(algorithm, data))
+    }))
+    const fileAccess: FileAccess = { open: vi.fn(), save: vi.fn(async () => {}) }
+    await mount(fileAccess); await click('tb.addGroup'); await click('tb.save')
+    await act(async () => { await completeHash() })
+    expect(fileAccess.save).toHaveBeenCalledTimes(1)
+    expect(new DraftStore().resume()).toBeNull()
+  })
+  it.each(['zh-CN', 'en'] as const)('%s 桌面提示栏不挡操作，恢复、丢弃和外部修改提示正确', async locale => {
+    setLocale(locale)
+    const file = { name: 'same.mmd', path: 'D:/one/same.mmd', code: 'flowchart LR\n A --> B' }
+    const drafts = new DraftStore()
+    const initial = await drafts.open(file); initial.edit('flowchart LR\n A --> C')
+    const session = await drafts.open({ ...file, code: file.code + '\n C' })
+    const render = async () => act(async () => { root.render(<>
+      <DraftNotice prompt={session.prompt} onRestore={() => { session.restore(); void render() }}
+        onDiscard={() => { session.discard(); void render() }} />
+      <textarea value={session.code} readOnly />
+    </>) })
+    await render()
+    expect(host.querySelector('[role="dialog"]')).toBeNull()
+    expect(host.querySelector('textarea')?.value).toBe(file.code + '\n C')
+    expect(host.querySelector('.draft-notice')?.textContent).toContain(t('draft.found'))
+    expect(host.querySelector('.draft-notice')?.textContent).toContain(t('draft.changedOutside'))
+    await act(async () => { host.querySelectorAll<HTMLButtonElement>('.draft-notice button')[0].click() })
+    expect(host.querySelector('textarea')?.value).toBe(initial.code)
+    expect(host.querySelector('.draft-notice')).toBeNull()
+    const discard = await drafts.open(file)
+    await act(async () => { root.render(<DraftNotice prompt={discard.prompt} onRestore={() => {}}
+      onDiscard={() => { discard.discard(); root.render(<DraftNotice prompt={discard.prompt} onRestore={() => {}} onDiscard={() => {}} />) }} />) })
+    await act(async () => { host.querySelectorAll<HTMLButtonElement>('.draft-notice button')[1].click() })
+    expect(host.querySelector('.draft-notice')).toBeNull()
+    expect(discard.code).toBe(file.code); expect(drafts.resume()).toBeNull()
   })
   it('浏览器下载保存使用原文件名和原始内容，释放临时对象 URL', async () => {
     const create = vi.fn(() => 'blob:test'), revoke = vi.fn(), clickLink = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})

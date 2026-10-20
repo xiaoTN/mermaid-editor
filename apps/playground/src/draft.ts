@@ -1,14 +1,141 @@
-export interface EditorFile { code: string; name: string }
+export interface EditorFile { code: string; name: string; path?: string }
 
-const DRAFT_KEY = 'mermaid-editor.draft'
-export function readDraft(): EditorFile | null {
-  try {
-    const draft: unknown = JSON.parse(localStorage.getItem(DRAFT_KEY) ?? 'null')
-    if (draft && typeof draft === 'object' && 'code' in draft && typeof draft.code === 'string' &&
-      'name' in draft && typeof draft.name === 'string' && draft.name) return { code: draft.code, name: draft.name }
-  } catch { /* unavailable storage or an invalid previous draft */ }
-  return null
+export interface DraftStorage {
+  readonly length: number
+  key(index: number): string | null
+  getItem(key: string): string | null
+  setItem(key: string, value: string): void
+  removeItem(key: string): void
 }
-export function writeDraft(file: EditorFile) {
-  try { localStorage.setItem(DRAFT_KEY, JSON.stringify(file)) } catch { /* editing remains available without storage */ }
+
+export interface Draft extends EditorFile {
+  path: string
+  baseCode: string
+  baseHash: string
+  updatedAt: number
+}
+
+export interface DraftPrompt {
+  key: 'draft.found'
+  restore: 'draft.restore'
+  discard: 'draft.discard'
+  changedOutside: boolean
+}
+
+export const DRAFT_PREFIX = 'mermaid-editor.draft:'
+export const draftKey = (path: string, hash: string) => `${DRAFT_PREFIX}${encodeURIComponent(path)}:${hash}`
+export async function hashContent(code: string): Promise<string> {
+  const digest = await globalThis.crypto.subtle.digest('SHA-256', new TextEncoder().encode(code))
+  return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('')
+}
+
+function browserStorage(): DraftStorage | undefined {
+  try { return globalThis.localStorage } catch { return undefined }
+}
+
+/** The shell can supply a real path in EditorFile.path; browsers fall back to the filename. */
+export class DraftStore {
+  constructor(private readonly storage: DraftStorage | undefined = browserStorage()) {}
+
+  private entries(): Draft[] {
+    const drafts: Draft[] = []
+    try {
+      if (!this.storage) return drafts
+      for (let i = 0; i < this.storage.length; i++) {
+        const key = this.storage.key(i)
+        if (!key?.startsWith(DRAFT_PREFIX)) continue
+        try {
+          const draft = JSON.parse(this.storage.getItem(key) ?? 'null') as Partial<Draft> | null
+          if (draft && typeof draft.code === 'string' && typeof draft.name === 'string' && draft.name &&
+            typeof draft.path === 'string' && draft.path && typeof draft.baseCode === 'string' &&
+            typeof draft.baseHash === 'string' && /^[a-f0-9]{64}$/.test(draft.baseHash) &&
+            typeof draft.updatedAt === 'number' && Number.isFinite(draft.updatedAt) &&
+            draft.code !== draft.baseCode && key === draftKey(draft.path, draft.baseHash)) drafts.push(draft as Draft)
+        } catch { /* Ignore one damaged entry without hiding other drafts. */ }
+      }
+    } catch { /* Storage can be disabled while the editor is open. */ }
+    return drafts.sort((a, b) => b.updatedAt - a.updatedAt)
+  }
+
+  async open(file: EditorFile): Promise<DraftSession> {
+    const path = file.path || file.name
+    const baseHash = await hashContent(file.code)
+    const matches = this.entries().filter(draft => draft.path === path)
+    const candidate = matches.find(draft => draft.baseHash === baseHash) ?? matches[0]
+    return new DraftSession(this, { ...file, path }, baseHash, candidate)
+  }
+
+  resume(): DraftSession | null {
+    const draft = this.entries()[0]
+    return draft ? new DraftSession(this, { code: draft.baseCode, name: draft.name, path: draft.path },
+      draft.baseHash, undefined, draft.code) : null
+  }
+
+  write(file: EditorFile & { path: string }, baseHash: string, code: string): void {
+    try {
+      const previous = this.entries()
+      const draft: Draft = { ...file, code, baseCode: file.code, baseHash,
+        updatedAt: Math.max(Date.now(), (previous[0]?.updatedAt ?? 0) + 1) }
+      this.storage?.setItem(draftKey(file.path, baseHash), JSON.stringify(draft))
+      for (const old of previous) {
+        if (old.path === file.path && old.baseHash !== baseHash) this.remove(old.path, old.baseHash)
+      }
+    } catch { /* A failed write must leave the previous draft intact. */ }
+  }
+
+  remove(path: string, hash: string): void {
+    try { this.storage?.removeItem(draftKey(path, hash)) } catch { /* Editing remains available without storage. */ }
+  }
+}
+
+/** File opening only offers a candidate. The host decides whether to mount a prompt. */
+export class DraftSession {
+  private current: string
+  constructor(private readonly store: DraftStore, private file: EditorFile & { path: string },
+    private baseHash: string, private candidate?: Draft, restoredCode?: string) {
+    this.current = restoredCode ?? file.code
+  }
+
+  get code(): string { return this.current }
+  get name(): string { return this.file.name }
+  get path(): string { return this.file.path }
+  get prompt(): DraftPrompt | null {
+    return this.candidate ? { key: 'draft.found', restore: 'draft.restore', discard: 'draft.discard',
+      changedOutside: this.candidate.baseHash !== this.baseHash } : null
+  }
+
+  edit(code: string): void {
+    if (code === this.current) return
+    this.current = code
+    if (code === this.file.code) {
+      this.discard()
+      this.store.remove(this.path, this.baseHash)
+    } else {
+      this.store.write(this.file, this.baseHash, code)
+      this.candidate = undefined
+    }
+  }
+
+  restore(): string {
+    const code = this.candidate?.code
+    if (code !== undefined) this.edit(code)
+    // A draft can equal an externally modified file; accepting it still resolves the prompt.
+    if (this.candidate) this.discard()
+    return this.current
+  }
+
+  discard(): void {
+    if (this.candidate) this.store.remove(this.candidate.path, this.candidate.baseHash)
+    this.candidate = undefined
+  }
+
+  /** Call only after the file adapter reports success, with the exact saved snapshot. */
+  async saved(savedCode: string): Promise<void> {
+    const hash = await hashContent(savedCode)
+    this.discard()
+    this.store.remove(this.path, this.baseHash)
+    this.file = { ...this.file, code: savedCode }
+    this.baseHash = hash
+    if (this.current !== savedCode) this.store.write(this.file, hash, this.current)
+  }
 }

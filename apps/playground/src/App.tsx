@@ -6,7 +6,7 @@ import { MermaidCodeMirror } from '@inkeep/mermaid-wysiwyg-codemirror'
 import { changedLines, flashField, flashLines } from './changedLines'
 import { DEFAULT_EXAMPLE } from './defaultExample'
 import { browserFiles, type FileAccess } from './files'
-import { readDraft, writeDraft } from './draft'
+import { DraftStore, type DraftSession } from './draft'
 
 const canvasConfig = {
   securityLevel: 'loose', theme: 'base',
@@ -20,13 +20,18 @@ const canvasConfig = {
 
 export default function App({ fileAccess = browserFiles }: { fileAccess?: FileAccess }) {
   const locale = useSyncExternalStore(onLocaleChange, getLocale)
-  const [initial] = useState(() => readDraft() ?? { code: DEFAULT_EXAMPLE, name: t('app.filename') })
+  const [drafts] = useState(() => new DraftStore())
+  const [resumed] = useState(() => drafts.resume())
+  const [initial] = useState(() => resumed ?? { code: DEFAULT_EXAMPLE, name: t('app.filename') })
   const [editor] = useState(() => new MermaidWysiwygEditor({ code: initial.code }))
   const code = useSyncExternalStore(cb => editor.on('change', cb), () => editor.code)
   const [filename, setFilename] = useState(initial.name)
   const [changed, setChanged] = useState(0)
   const [parseError, setParseError] = useState(false)
-  const [toast, setToast] = useState<{ key: string; reason?: string } | null>(null)
+  const [toast, setToast] = useState<{ key: string; reason?: string } | null>(() => resumed ? { key: 'draft.restored' } : null)
+  const session = useRef<DraftSession | null>(resumed)
+  const initializing = useRef<Promise<DraftSession> | null>(null)
+  const [ready, setReady] = useState(!!resumed)
   const canvas = useRef<HTMLDivElement>(null)
   const hint = useRef<HTMLElement>(null)
   const view = useRef<MermaidCanvasView | null>(null)
@@ -38,7 +43,16 @@ export default function App({ fileAccess = browserFiles }: { fileAccess?: FileAc
     document.documentElement.lang = locale
     document.title = `${t('app.title')} — ${filename}`
   }, [locale, filename])
-  useEffect(() => { writeDraft({ code, name: filename }) }, [code, filename])
+  useEffect(() => {
+    if (session.current) return
+    let cancelled = false
+    initializing.current = drafts.open(initial)
+    void initializing.current.then(opened => {
+      if (!cancelled && !session.current) { session.current = opened; setReady(true) }
+    })
+    return () => { cancelled = true }
+  }, [drafts, initial])
+  useEffect(() => { if (ready) session.current?.edit(code) }, [code, ready])
   useEffect(() => editor.on('change', event => setChanged(changedLines(event).length)), [editor])
   useEffect(() => {
     if (!canvas.current) return
@@ -60,14 +74,23 @@ export default function App({ fileAccess = browserFiles }: { fileAccess?: FileAc
     const version = ++fileVersion.current
     try {
       const opened = await fileAccess.open(file)
+      const nextSession = await drafts.open(opened)
       if (version !== fileVersion.current) return
+      session.current = nextSession; setReady(true)
       view.current?.fitView()
       editor.setCode(opened.code, 'external')
       setFilename(opened.name); setChanged(0); setToast(null)
     } catch (error) { setToast({ key: 'err.open', reason: error instanceof Error ? error.message : String(error) }) }
   }
   const save = async () => {
-    try { await fileAccess.save({ code: editor.code, name: filename }) }
+    const savedCode = editor.code
+    try {
+      const current = session.current ?? await initializing.current
+      current?.edit(savedCode)
+      await fileAccess.save({ code: savedCode, name: filename, ...(current && current.path !== filename ? { path: current.path } : {}) })
+      await current?.saved(savedCode)
+      if (session.current === current) setToast(null)
+    }
     catch (error) { setToast({ key: 'err.save', reason: error instanceof Error ? error.message : String(error) }) }
   }
   const copy = async () => {

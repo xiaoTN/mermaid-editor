@@ -7,6 +7,7 @@ import { MermaidCanvasView, getLocale, listKeys, messages, setLocale, t } from '
 import App from '../../../apps/playground/src/App'
 import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
+import { createHash } from 'node:crypto'
 
 vi.mock('../../../apps/playground/node_modules/mermaid', () => ({ default: { initialize() {}, async render() { return { svg: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300"/>' } }, async parse() {} } }))
 
@@ -29,6 +30,8 @@ function assertEnglish(root: Element) {
 }
 beforeEach(async () => {
   localStorage.clear(); setLocale('zh-CN')
+  vi.stubGlobal('crypto', { subtle: { digest: async (_: string, data: Uint8Array) =>
+    new Uint8Array(createHash('sha256').update(data).digest()).buffer } })
   vi.stubGlobal('CSS', { escape: (s: string) => s.replace(/[^\w-]/g, c => `\\${c}`) })
   editor = new MermaidWysiwygEditor({ code: before })
   host = document.createElement('div'); document.body.append(host)
@@ -119,7 +122,11 @@ describe('语言包和界面', () => {
     view.setReadOnly(true); assertEnglish(host)
   })
   it('首次提示可关闭，重建画布后不再出现', async () => {
-    host.querySelector<HTMLButtonElement>('[aria-label="关闭"]')!.click()
+    const close = host.querySelector<HTMLButtonElement>('[aria-label="关闭"]')!
+    expect(close.textContent).toBe('×'); expect(close.title).toBe('关闭')
+    setLocale('en')
+    expect(close.textContent).toBe('×'); expect(close.title).toBe('Close'); expect(close.getAttribute('aria-label')).toBe('Close')
+    close.click()
     expect(localStorage.getItem('mermaid-editor.hintDismissed')).toBe('1')
     expect(host.querySelector<HTMLElement>('.mw-first-hint')!.hidden).toBe(true)
     view.destroy()

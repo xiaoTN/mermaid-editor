@@ -41,6 +41,13 @@ export interface FlowOpContext {
 
 // ---------- helpers ----------
 
+/** Compare semantic edges across the entire graph, including expanded fans and subgraphs. */
+function hasDuplicateEdge(graph: FlowGraph, source: string, target: string,
+  style: Pick<FlowEdge['seg'], 'line' | 'arrowStart' | 'arrowEnd'>, exclude?: FlowEdge): boolean {
+  return graph.edges.some(edge => edge !== exclude && edge.source === source && edge.target === target &&
+    edge.seg.line === style.line && edge.seg.arrowStart === style.arrowStart && edge.seg.arrowEnd === style.arrowEnd)
+}
+
 const NEEDS_QUOTE = /[[\]{}()|<>"\\/&%#;]|^\s|\s$|\bend\b|--|==|-\.|~~~/
 
 function escapeLabel(label: string): string {
@@ -399,12 +406,13 @@ export function compileFlowchartOp(ctx: FlowOpContext, op: FlowchartOp): OpResul
       const src = nodeOf(graph, op.source)
       const tgt = nodeOf(graph, op.target)
       if (!src || !tgt) return null
-      if (graph.edges.some(edge => edge.source === op.source && edge.target === op.target &&
-        edge.seg.line === (op.line ?? 'solid') && edge.seg.arrowStart === 'open' &&
-        edge.seg.arrowEnd === (op.arrowEnd ?? 'arrow'))) {
+      const line = op.line ?? 'solid'
+      const arrowEnd = line === 'invisible' ? 'open' : op.arrowEnd ?? 'arrow'
+      if (hasDuplicateEdge(graph, op.source, op.target,
+        { line, arrowStart: 'open', arrowEnd })) {
         return { edits: [], warnings: [{ key: 'toast.dupEdge' }] }
       }
-      const opStr = edgeOpString(op.line ?? 'solid', op.arrowEnd ?? 'arrow')
+      const opStr = edgeOpString(line, arrowEnd)
       const label = op.label ? `|${printEdgeLabel(op.label)}|` : ''
       let after = lastRefLine(graph, [op.source, op.target])
       if (src.subgraph !== tgt.subgraph) {
@@ -570,9 +578,7 @@ export function compileFlowchartOp(ctx: FlowOpContext, op: FlowchartOp): OpResul
       if (!edge || !nodeOf(graph, op.nodeId) || edge[op.end] === op.nodeId) return null
       const source = op.end === 'source' ? op.nodeId : edge.source
       const target = op.end === 'target' ? op.nodeId : edge.target
-      if (graph.edges.some(other => other !== edge && other.lineIndex === edge.lineIndex &&
-        other.source === source && other.target === target && other.seg.line === edge.seg.line &&
-        other.seg.arrowStart === edge.seg.arrowStart && other.seg.arrowEnd === edge.seg.arrowEnd)) {
+      if (hasDuplicateEdge(graph, source, target, edge.seg, edge)) {
         return { edits: [], warnings: [{ key: 'toast.dupEdge' }] }
       }
       const stmt = graph.statements.get(edge.lineIndex)?.[edge.stmtIndex]
