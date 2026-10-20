@@ -9,6 +9,7 @@ import App from '../../../apps/playground/src/App'
 import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
+import { createSourceFile, isJSDoc, ScriptTarget, type Node } from 'typescript'
 
 vi.mock('../../../apps/playground/node_modules/mermaid', () => ({ default: { initialize() {}, async render() { return { svg: '<svg id="fixture" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300"/>' } }, async parse() {} } }))
 
@@ -18,7 +19,7 @@ let host: HTMLElement, editor: MermaidWysiwygEditor, view: MermaidCanvasView
 
 function assertEnglish(root: Element) {
   const clone = root.cloneNode(true) as Element
-  // User-authored diagram labels and source code do not follow the UI locale.
+  // 用户编写的图中文字和源码不受界面语言限制。
   clone.querySelectorAll('.mw-svg-host, .codepane, style, script').forEach(el => el.remove())
   clone.querySelectorAll('.mw-inplace-editor').forEach(el => { el.textContent = '' })
   expect(clone.textContent).not.toMatch(CJK)
@@ -47,11 +48,25 @@ afterEach(() => { view.destroy(); host.remove(); vi.unstubAllGlobals(); setLocal
 
 describe('语言包和界面', () => {
   it('源码中文字面量只允许出现在中文语言包和默认示例', () => {
+    // 按语法移除注释，避免把中文开发注释误判为未翻译的界面文案。
+    const withoutComments = (file: string, source: string) => {
+      const tree = createSourceFile(file, source, ScriptTarget.Latest)
+      const collect = (node: Node): string => {
+        if (isJSDoc(node)) return ''
+        const children = node.getChildren(tree)
+        return children.length ? children.map(collect).join(' ') : node.getText(tree)
+      }
+      return collect(tree)
+    }
+    expect(withoutComments('fixture.ts', '// 中文注释\n/* 中文说明 */\n/** 中文文档 */\nconst label = "Label"')).not.toMatch(CJK)
+    expect(withoutComments('fixture.tsx', 'const label = <button>未翻译标题</button>')).toMatch(CJK)
+    expect(withoutComments('fixture.ts', 'const label = "未翻译标题"')).toMatch(CJK)
     const scan = (path: string): string[] => readdirSync(path, { withFileTypes: true }).flatMap(entry =>
       entry.isDirectory() ? scan(join(path, entry.name)) : /\.(?:tsx?|css)$/.test(entry.name) ? [join(path, entry.name)] : [])
     const files = [...scan('src'), ...scan('../../apps/playground/src')]
     for (const file of files.filter(file => !/(?:zh-CN|defaultExample)\.ts$/.test(file))) {
-      expect(readFileSync(file, 'utf8'), file).not.toMatch(CJK)
+      const source = readFileSync(file, 'utf8')
+      expect(file.endsWith('.css') ? source : withoutComments(file, source), file).not.toMatch(CJK)
     }
   })
   it('产品补充文案逐字一致，旧演示 key 和临时名已清除', () => {

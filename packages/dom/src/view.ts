@@ -61,8 +61,8 @@ export interface ViewOptions {
   /** Optional host for the full-width first-run hint. */
   hintContainer?: HTMLElement
   /**
-   * Canvas pan/zoom: fit-to-canvas on first render, drag empty space to pan,
-   * ctrl/cmd+wheel (or trackpad pinch) to zoom, plus corner zoom controls.
+   * 画布首次渲染时自动适配，双指滑动或拖动空白处平移；
+   * Ctrl/Cmd 加滚轮或触控板捏合缩放，也可使用角落的缩放按钮。
    */
   panZoom?: boolean
   /** CSS color for selection/hover/ghost-edge chrome */
@@ -414,7 +414,7 @@ export class MermaidCanvasView {
     this.renderTimer = setTimeout(() => void this.render(), this.debounceMs)
   }
 
-  // ----- pan / zoom -----
+  // ----- 画布平移与缩放 -----
 
   private setupPanZoom() {
     this.container.classList.add('mw-panzoom')
@@ -423,13 +423,22 @@ export class MermaidCanvasView {
     this.disposers.push(() => this.svgHost.removeEventListener('scroll', onScroll))
 
     const onWheel = (e: WheelEvent) => {
-      // trackpad pinch arrives as ctrl+wheel; plain wheel keeps scrolling the page
-      if (!e.ctrlKey && !e.metaKey) return
       e.preventDefault()
-      // pinches stream small deltas; discrete wheel ticks send ±100+ — clamp
-      // so one tick can't triple the scale
-      const delta = Math.max(-40, Math.min(40, e.deltaY))
-      this.zoomAt(e.clientX, e.clientY, Math.exp(-delta * 0.01))
+      if (e.ctrlKey || e.metaKey) {
+        // 触控板捏合会产生 Ctrl 加滚轮事件，限制单次变化以免缩放跳变。
+        const delta = Math.max(-40, Math.min(40, e.deltaY))
+        this.zoomAt(e.clientX, e.clientY, Math.exp(-delta * 0.01))
+        return
+      }
+      // 双指滑动统一平移 SVG，悬停在节点或连接点上时也走同一条路径。
+      // 触控板通常传像素，滚轮也可能按行或页传递位移。
+      const unitX = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? this.container.clientWidth : 1
+      const unitY = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? this.container.clientHeight : 1
+      this.zoomTx -= e.deltaX * unitX
+      this.zoomTy -= e.deltaY * unitY
+      this.hasUserView = true
+      this.applyViewTransform()
+      this.updatePopover()
     }
     this.container.addEventListener('wheel', onWheel, { passive: false })
     this.disposers.push(() => this.container.removeEventListener('wheel', onWheel))
