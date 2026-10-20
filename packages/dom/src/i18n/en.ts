@@ -53,6 +53,8 @@ export default {
   'draft.changedOutside': "File was changed outside the editor",
   'app.title': "Mermaid Editor",
   'app.source': "Mermaid source",
+  'app.collapseSource': "Collapse code panel",
+  'app.expandSource': "Expand code panel",
   'app.codeEditor': "Code editor",
   'app.zh': "ZH",
   'app.en': "EN",

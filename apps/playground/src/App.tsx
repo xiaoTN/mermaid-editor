@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ButtonHTMLAttributes } from 'react'
+import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type ButtonHTMLAttributes } from 'react'
 import mermaid from 'mermaid'
 import { MermaidWysiwygEditor } from '@inkeep/mermaid-wysiwyg-core'
 import { MermaidCanvasView, t, getLocale, setLocale, onLocaleChange } from '@inkeep/mermaid-wysiwyg-dom'
@@ -41,6 +41,8 @@ export default function App({ fileAccess = desktop ?? browserFiles }: { fileAcce
   const [prompt, setPrompt] = useState<DraftSession['prompt']>(resumed?.prompt ?? null)
   const [outside, setOutside] = useState<EditorFile | null>(null)
   const [parseError, setParseError] = useState(false)
+  const [sourceCollapsed, setSourceCollapsed] = useState(false)
+  const sourcePanelId = useId()
   const [toast, setToast] = useState<{ key: string; reason?: string } | null>(null)
   const session = useRef<DraftSession | null>(resumed)
   const initializing = useRef<Promise<DraftSession> | null>(null)
@@ -266,8 +268,19 @@ export default function App({ fileAccess = desktop ?? browserFiles }: { fileAcce
       if (restored !== undefined) editor.setCode(restored, 'api')
       setPrompt(null)
     }} onDiscard={() => { session.current?.discard(); setPrompt(null) }} />
-    <main className="workspace">
-      <section className="codepanel" aria-label={t('app.source')}><CodePane editor={editor} changed={changed} /></section>
+    <main className={`workspace${sourceCollapsed ? ' source-collapsed' : ''}`}>
+      {/* 隐藏时保留编辑器实例，展开后沿用光标、滚动位置和编辑历史。 */}
+      <section id={sourcePanelId} className="codepanel" aria-label={t('app.source')} hidden={sourceCollapsed}>
+        <CodePane editor={editor} changed={changed} />
+      </section>
+      <div className="source-divider">
+        <Button className="source-toggle" aria-label={t(sourceCollapsed ? 'app.expandSource' : 'app.collapseSource')}
+          aria-controls={sourcePanelId} aria-expanded={!sourceCollapsed} onClick={() => setSourceCollapsed(value => !value)}>
+          <svg viewBox="0 0 16 16" aria-hidden="true">
+            <path d={sourceCollapsed ? 'm6 4 4 4-4 4Z' : 'm10 4-4 4 4 4Z'} />
+          </svg>
+        </Button>
+      </div>
       <section className="canvas-panel" aria-label={t('app.canvas')}>
         <div ref={canvas} className="canvas" />
         {toast && <div className="app-toast" role="status" aria-live="polite">{t(toast.key, { reason: toast.reason ?? '' })}</div>}

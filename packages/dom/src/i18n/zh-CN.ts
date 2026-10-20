@@ -55,6 +55,8 @@ export default {
   'draft.changedOutside': "文件已在外部修改",
   'app.title': "Mermaid 编辑器",
   'app.source': "Mermaid 源码",
+  'app.collapseSource': "收起代码区",
+  'app.expandSource': "展开代码区",
   'app.codeEditor': "代码编辑器",
   'app.zh': "中",
   'app.en': "EN",
