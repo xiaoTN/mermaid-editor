@@ -5,6 +5,7 @@ package main
 import (
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"log"
 	"os"
 	"path/filepath"
@@ -80,11 +81,11 @@ func (a *app) bind() {
 	}
 	// Bindings only enqueue work. Native modal loops must never run on a
 	// WebView2 binding callback stack; gitdash's drain guard enforces this.
-	bind("meOpen", func(id int, path, filter string) {
+	bind("meOpen", func(id int, path, filter, allFiles string) {
 		a.w.Dispatch(func() {
 			var err error
 			if path == "" {
-				path, err = pickFile(a.hwnd(), false, "", filter)
+				path, err = pickFile(a.hwnd(), false, "", filter, allFiles)
 			}
 			if err != nil || path == "" {
 				a.answer(id, nil, err)
@@ -95,24 +96,54 @@ func (a *app) bind() {
 			a.answer(id, doc, err)
 		})
 	})
-	save := func(id int, doc files.Document, filter string, saveAs bool) {
+	bind("meCheck", func(id int, path string) {
+		a.w.Dispatch(func() { doc, err := files.Read(path); a.answer(id, doc, err) })
+	})
+	save := func(id int, doc files.Document, filter, allFiles string, labels conflictLabels, saveAs bool) {
 		a.w.Dispatch(func() {
 			path := doc.Path
 			var err error
 			if saveAs || doc.Untitled || !filepath.IsAbs(path) {
-				path, err = pickFile(a.hwnd(), true, doc.Name, filter)
+				path, err = pickFile(a.hwnd(), true, doc.Name, filter, allFiles)
 			}
 			if err != nil || path == "" {
 				a.answer(id, nil, err)
 				return
 			}
 			saved, err := files.Save(doc, path)
+			for errors.Is(err, files.ErrChangedOutside) {
+				// Approval is for these exact disk bytes. If they change during
+				// the dialog, Save checks again and asks again.
+				hash, hashErr := files.Hash(path)
+				if hashErr != nil {
+					err = hashErr
+					break
+				}
+				switch confirmConflict(a.hwnd(), labels) {
+				case "overwrite":
+					doc.DiskHash = hash
+					saved, err = files.Save(doc, path)
+				case "reload":
+					saved, err = files.Read(path)
+					saved.Reloaded = true
+				default:
+					a.answer(id, nil, nil)
+					return
+				}
+				if saved.Reloaded {
+					break
+				}
+			}
 			applog.Printf("save %s", path)
 			a.answer(id, saved, err)
 		})
 	}
-	bind("meSave", func(id int, doc files.Document, filter string) { save(id, doc, filter, false) })
-	bind("meSaveAs", func(id int, doc files.Document, filter string) { save(id, doc, filter, true) })
+	bind("meSave", func(id int, doc files.Document, filter, allFiles string, labels conflictLabels) {
+		save(id, doc, filter, allFiles, labels, false)
+	})
+	bind("meSaveAs", func(id int, doc files.Document, filter, allFiles string, labels conflictLabels) {
+		save(id, doc, filter, allFiles, labels, true)
+	})
 	bind("meCopy", func(text string) error { return setClipboard(a.hwnd(), text) })
 	bind("meLog", func(message string) { applog.Printf("js: %s", message) })
 	bind("meState", func(title string) { a.w.Dispatch(func() { a.w.SetTitle(title) }) })
@@ -190,7 +221,14 @@ func main() {
 		}
 	}
 	webview2.OnCopyData = a.openPath
-	webview2.EnableFileDrop(w)
+	webview2.OnMainFocus = func() {
+		if a.ready {
+			a.emit(map[string]string{"type": "focus"})
+		}
+	}
+	if err := webview2.EnableFileDrop(w); err != nil {
+		applog.Printf("native OLE drop unavailable (WM_DROPFILES remains enabled): %v", err)
+	}
 	w.SetSize(640, 420, webview2.HintMin)
 	a.bind()
 	startup, _ := json.Marshal(a.pendingPath)

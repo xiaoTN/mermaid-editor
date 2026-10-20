@@ -12,6 +12,7 @@ import { assertAllowedChanges, assertOnlyReplacesLine, lineDiff, type AllowedCha
 import { DraftStore, draftKey, hashContent, type DraftStorage } from '../../apps/playground/src/draft.ts'
 import { JSDOM } from '../../packages/dom/node_modules/jsdom/lib/api.js'
 import { createDomCases } from './dom-cases.mts'
+import { createApplicationCases } from './application-cases.mts'
 
 // 仅写入仓库根目录的 out/cases；testdata 中的样例、规则和校验器始终只读。
 const root = fileURLToPath(new URL('../../', import.meta.url))
@@ -576,13 +577,14 @@ function memoryDrafts() {
 
 const draftFile = { name: '订单.mmd', path: 'D:/订单/订单.mmd', code: 'flowchart LR\r\n\tA --> B  \r\n' }
 const draftChecks: [string, string, () => void | Promise<void>][] = [
-  ['35', '最近草稿字节恢复、恢复文案及保存清理通过；浏览器提示由 dom vitest 覆盖', async () => {
+  ['35', '按 6d 覆盖旧规则：启动只提供草稿提示，明确恢复后才应用；保存清理', async () => {
     const { drafts, storage } = memoryDrafts()
     check(drafts.resume() === null, '无草稿时不应恢复')
     const session = await drafts.open(draftFile)
     session.edit(draftFile.code.replace('B', 'C'))
-    const resumed = new DraftStore(storage).resume()
-    check(resumed?.code === session.code && resumed.name === draftFile.name, '未恢复最近草稿原始字节')
+    const resumed = new DraftStore(storage).pending()
+    check(resumed?.code === draftFile.code && resumed.prompt?.key === 'draft.found', '启动不得自动恢复')
+    check(resumed.restore() === session.code && resumed.name === draftFile.name, '未恢复最近草稿原始字节')
     check(messages[getLocale()]['draft.restored'] === (getLocale() === 'en' ? 'Restored your unsaved edits' : '已恢复上次未保存的编辑'), '恢复提示文案错误')
     await resumed.saved(resumed.code)
     check(new DraftStore(storage).resume() === null, '保存成功后仍有草稿')
@@ -668,6 +670,10 @@ try {
     } catch (error) { failed++; print(`用例 ${number}：失败（${message(error)}）`) }
   }
 } finally { dom.window.close() }
+for (const [number, note, run] of createApplicationCases(root)) {
+  try { await run(); passed++; print(`用例 ${number}：通过（${note}）`) }
+  catch (error) { failed++; print(`用例 ${number}：失败（${message(error)}）`) }
+}
 print(`合计：通过 ${passed}，失败 ${failed}；退出码 ${failed}`)
 writeFileSync(join(output, 'summary.txt'), report.join('\n') + '\n', 'utf8')
 process.exitCode = failed

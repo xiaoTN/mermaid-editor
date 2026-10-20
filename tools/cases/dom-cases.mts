@@ -91,7 +91,9 @@ export function createDomCases(directory: string): [string, string, (document: D
     const host = document.createElement('div')
     document.body.append(host)
     const view = new MermaidCanvasView({ editor, container: host, debounceMs: 10000,
-      mermaid: { initialize() {}, async parse() {}, async render() { return { svg: fixture(name, 'svg') } } } })
+      mermaid: { initialize() {}, async parse() {}, async render(_id, current) {
+        return { svg: fixture(current === fixture('edge-forms', 'mmd') ? 'edge-forms' : name, 'svg') }
+      } } })
     await view.render()
     assert.equal(view.renderError, null)
     const click = (el: Element) => el.dispatchEvent(new document.defaultView!.MouseEvent('click', { bubbles: true }))
@@ -222,6 +224,44 @@ export function createDomCases(directory: string): [string, string, (document: D
           assert.equal(editor.canUndo, false)
           assert.equal(host.querySelector('[contenteditable="true"]'), null)
         }
+      } finally { canvas.destroy() }
+    }],
+    ['60', '真实 Mermaid 类图/状态图/ER/时序图/甘特图/饼图/类成员：预览条，全部画布操作不编辑；切回流程图恢复编辑', async document => {
+      for (const name of ['preview-class', 'preview-state', 'preview-er', 'preview-sequence', 'preview-gantt', 'preview-pie', 'preview-members']) {
+        const canvas = await setupCanvas(document, name)
+        const { editor, host, view, code, click, key } = canvas
+        try {
+          assert.equal(host.querySelector('.mw-readonly-hint')?.textContent, t('canvas.previewOnly'))
+          assert.equal(host.querySelector<HTMLElement>('.mw-readonly-hint')?.hidden, false)
+          assert.equal(host.querySelector('[data-mw-entity], [data-mw-ambiguous]'), null)
+          const targets = host.querySelectorAll('svg g, svg path, svg text, svg rect, svg line')
+          assert(targets.length > 0, `${name} must render actual interaction targets`)
+          for (const target of targets) {
+            for (const type of ['pointerover', 'pointerdown', 'pointermove', 'pointerup', 'dblclick']) {
+              target.dispatchEvent(new document.defaultView!.MouseEvent(type, { bubbles: true, clientX: 60 }))
+            }
+            click(target); key(host, 'Delete'); key(host, 'Enter')
+          }
+          assert.equal(editor.code, code); assert.equal(editor.canUndo, false); assert.equal(editor.canRedo, false)
+          assert.deepEqual(editor.selection, [])
+          assert.equal(host.querySelector('.mw-toast')?.textContent, '')
+          assert.equal(host.querySelector('.mw-selected, .mw-popover, .mw-handle, .mw-lifeline-insert, .mw-lifeline-menu, [contenteditable="true"]'), null)
+          editor.loadCode(fixture('edge-forms', 'mmd')); await view.render()
+          assert.equal(host.querySelector<HTMLElement>('.mw-readonly-hint')?.hidden, true)
+          click(host.querySelector('path[data-mw-entity]')!)
+          assert.equal(editor.selection.length, 1)
+          key(host, 'Delete'); assert.equal(editor.canUndo, true)
+        } finally { canvas.destroy() }
+      }
+    }],
+    ['61', '真实 Mermaid 撞车边：新中英轻提示位于右下角，不显示选中框/样式条；Delete 不改代码', async document => {
+      const canvas = await setupCanvas(document, 'edge-collision')
+      try {
+        canvas.click(canvas.host.querySelector('path[data-id="L_a_b_c_0"]')!)
+        assert.equal(canvas.host.querySelector('.mw-toast')?.textContent, t('canvas.ambiguous'))
+        assert.equal(canvas.host.querySelector('.mw-selected, .mw-popover, .mw-handle'), null)
+        canvas.key(canvas.host, 'Delete')
+        assert.equal(canvas.editor.code, canvas.code); assert.equal(canvas.editor.canUndo, false)
       } finally { canvas.destroy() }
     }],
   ]

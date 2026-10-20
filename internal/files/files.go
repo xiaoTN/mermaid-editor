@@ -2,7 +2,9 @@
 package files
 
 import (
+	"crypto/sha256"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -17,6 +19,22 @@ type Document struct {
 	Path     string  `json:"path,omitempty"`
 	Source   *string `json:"source,omitempty"`
 	Untitled bool    `json:"untitled,omitempty"`
+	DiskHash string  `json:"diskHash,omitempty"`
+	Reloaded bool    `json:"reloaded,omitempty"`
+}
+
+var ErrChangedOutside = errors.New("file changed outside the editor")
+
+// Hash always reads bytes: size and mtime alone miss same-size external edits.
+func Hash(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return "missing", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%x", sha256.Sum256(data)), nil
 }
 
 func Supported(path string) bool {
@@ -84,7 +102,7 @@ func Read(path string) (Document, error) {
 		return Document{}, errors.New("文件不是有效的 UTF-8 编码，请先转换为 UTF-8")
 	}
 	source := string(data)
-	doc := Document{Code: source, Name: filepath.Base(path), Path: path}
+	doc := Document{Code: source, Name: filepath.Base(path), Path: path, DiskHash: fmt.Sprintf("%x", sha256.Sum256(data))}
 	if strings.EqualFold(filepath.Ext(path), ".md") {
 		start, end, ok := block(source)
 		if !ok {
@@ -127,10 +145,31 @@ func Save(doc Document, path string) (Document, error) {
 	if err != nil {
 		return Document{}, err
 	}
+	expected := ""
+	if strings.EqualFold(filepath.Clean(doc.Path), path) {
+		expected = doc.DiskHash
+	}
+	check := func() error {
+		if expected == "" {
+			return nil
+		}
+		hash, err := Hash(path)
+		if err != nil {
+			return err
+		}
+		if hash != expected {
+			return ErrChangedOutside
+		}
+		return nil
+	}
+	if err := check(); err != nil {
+		return Document{}, err
+	}
 	if !Supported(path) {
 		return Document{}, errors.New("请选择 .mmd、.mermaid、.md 或 .txt 文件")
 	}
 	doc.Path, doc.Name, doc.Untitled = path, filepath.Base(path), false
+	doc.Reloaded = false // response-only flag must not survive a later save request
 	// Re-read Markdown so external changes outside the first block survive saving.
 	if strings.EqualFold(filepath.Ext(path), ".md") {
 		if data, readErr := os.ReadFile(path); readErr == nil {
@@ -176,11 +215,15 @@ func Save(doc Document, path string) (Document, error) {
 	if closeErr != nil {
 		return Document{}, closeErr
 	}
+	if err = check(); err != nil {
+		return Document{}, err
+	}
 	if err = replaceFile(tmp.Name(), path); err != nil {
 		return Document{}, err
 	}
 	if strings.EqualFold(filepath.Ext(path), ".md") {
 		doc.Source = &source
 	}
+	doc.DiskHash = fmt.Sprintf("%x", sha256.Sum256([]byte(source)))
 	return doc, nil
 }

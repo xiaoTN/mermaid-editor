@@ -1,4 +1,4 @@
-export interface EditorFile { code: string; name: string; path?: string; source?: string; untitled?: boolean }
+export interface EditorFile { code: string; name: string; path?: string; source?: string; untitled?: boolean; diskHash?: string; reloaded?: boolean }
 
 export interface DraftStorage {
   readonly length: number
@@ -57,10 +57,10 @@ export class DraftStore {
     return drafts.sort((a, b) => b.updatedAt - a.updatedAt)
   }
 
-  async open(file: EditorFile): Promise<DraftSession> {
+  async open(file: EditorFile, offerDraft = true): Promise<DraftSession> {
     const path = file.path || file.name
     const baseHash = await hashContent(file.source ?? file.code)
-    const matches = this.entries().filter(draft => draft.path === path)
+    const matches = offerDraft ? this.entries().filter(draft => draft.path === path) : []
     const candidate = matches.find(draft => draft.baseHash === baseHash) ?? matches[0]
     return new DraftSession(this, { ...file, path }, baseHash, candidate)
   }
@@ -70,6 +70,13 @@ export class DraftStore {
     return draft ? new DraftSession(this, { code: draft.baseCode, name: draft.name, path: draft.path,
       source: draft.source, untitled: draft.untitled },
       draft.baseHash, undefined, draft.code) : null
+  }
+
+  /** Startup offers the latest draft without applying its unsaved contents. */
+  pending(): DraftSession | null {
+    const draft = this.entries()[0]
+    return draft ? new DraftSession(this, { code: draft.baseCode, name: draft.name, path: draft.path,
+      source: draft.source, untitled: draft.untitled }, draft.baseHash, draft) : null
   }
 
   write(file: EditorFile & { path: string }, baseHash: string, code: string): void {
@@ -133,8 +140,19 @@ export class DraftSession {
   }
 
   discard(): void {
-    if (this.candidate) this.store.remove(this.candidate.path, this.candidate.baseHash)
+    this.store.removeFile(this.path)
     this.candidate = undefined
+  }
+
+  /** Track the current disk bytes for drafts while retaining the last opened/
+   * saved hash for the native overwrite confirmation. */
+  async observeDisk(file: EditorFile): Promise<void> {
+    const hash = await hashContent(file.source ?? file.code)
+    this.file = { ...file, path: this.path, diskHash: this.file.diskHash }
+    this.baseHash = hash
+    this.candidate = undefined
+    this.store.removeFile(this.path)
+    if (this.current !== file.code) this.store.write(this.file, hash, this.current)
   }
 
   /** Call only after the file adapter reports success, with the exact saved snapshot. */

@@ -7,6 +7,46 @@ import (
 	"testing"
 )
 
+func TestExternalModificationCannotBeSilentlyOverwritten(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "external.mmd")
+	os.WriteFile(path, []byte("flowchart LR\n A --> B"), 0600)
+	doc, err := Read(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, _ := os.Stat(path)
+	external := "flowchart LR\n A --> C"
+	os.WriteFile(path, []byte(external), 0600)
+	os.Chtimes(path, info.ModTime(), info.ModTime()) // same size and mtime: must compare SHA-256
+	doc.Code = "flowchart LR\n X --> Y"
+	if _, err := Save(doc, path); err == nil {
+		t.Fatal("silently overwrote an external change")
+	}
+	actual, _ := os.ReadFile(path)
+	if string(actual) != external {
+		t.Fatal("external bytes were lost")
+	}
+}
+
+func TestSaveAfterReloadAndExternalDeletion(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "deleted.mmd")
+	os.WriteFile(path, []byte("flowchart TD"), 0600)
+	doc, _ := Read(path)
+	doc.Reloaded = true
+	saved, err := Save(doc, path)
+	if err != nil || saved.Reloaded {
+		t.Fatal("reload flag leaked into normal save", err)
+	}
+	os.Remove(path)
+	if _, err := Save(saved, path); err != ErrChangedOutside {
+		t.Fatal("deleted file must require approval", err)
+	}
+	saved.DiskHash = "missing"
+	if _, err := Save(saved, path); err != nil {
+		t.Fatal("approved recreation failed", err)
+	}
+}
+
 func TestRawBytes(t *testing.T) {
 	for _, extension := range []string{".mmd", ".MERMAID", ".txt"} {
 		for _, source := range []string{"", "\ufeffflowchart TD\r\n\t甲 --> 乙  \n%% 注释\r"} {
@@ -47,6 +87,10 @@ func TestMarkdownOnlyFirstBlockAndExternalText(t *testing.T) {
 	doc.Code = strings.Replace(doc.Code, "乙", "丙", 1)
 	external := strings.Replace(source, "标题", "外部修改", 1)
 	os.WriteFile(path, []byte(external), 0600)
+	if _, err := Save(doc, path); err != ErrChangedOutside {
+		t.Fatal("external Markdown change must require approval", err)
+	}
+	doc.DiskHash, _ = Hash(path) // explicit overwrite approval, preserving the latest outer text
 	saved, err := Save(doc, path)
 	if err != nil {
 		t.Fatal(err)

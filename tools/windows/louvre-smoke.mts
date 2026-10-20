@@ -87,7 +87,7 @@ try {
         return { color: style.backgroundColor, shadow: style.boxShadow, flashing: line.classList.contains('mw-changed-line') };
       })()`)
       assert(decoration.shadow.includes('rgb(96, 165, 250)'))
-      if (!decoration.flashing) assert.equal(decoration.color, 'rgba(96, 165, 250, 0.18)')
+      if (!decoration.flashing) assert.equal(decoration.color, 'rgb(219, 234, 254)')
       if (pair === 'entry->layout' && action === 'delete') {
         const screenshot = await cdp('Page.captureScreenshot', { format: 'png' })
         await writeFile(join(output, '选中边与源码高亮.png'), Buffer.from(screenshot.data, 'base64'))

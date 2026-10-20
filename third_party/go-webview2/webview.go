@@ -90,7 +90,9 @@ var (
 	OnMainCloseRequested func() bool
 	// OnDropFiles delivers native HDROP paths (UI thread).
 	OnDropFiles func([]string)
-	OnCopyData func(string)
+	// OnMainFocus runs on native activation, even if the WebView document did not blur.
+	OnMainFocus func()
+	OnCopyData  func(string)
 	// Logf, when set, receives diagnostics (stalled queue, quit, ...).
 	Logf func(format string, args ...interface{})
 )
@@ -365,6 +367,9 @@ func wndproc(hwnd, msg, wp, lp uintptr) uintptr {
 			if wp&0xFFFF != w32.WAInactive && w.autofocus {
 				w.browser.Focus()
 			}
+			if !w.secondary && wp&0xFFFF != w32.WAInactive && OnMainFocus != nil {
+				OnMainFocus()
+			}
 			return r
 		case w32.WMApp:
 			drain()
@@ -400,9 +405,12 @@ func wndproc(hwnd, msg, wp, lp uintptr) uintptr {
 					OnMainClose()
 				}
 			}
-			if c, ok := w.browser.(*edge.Chromium); ok { c.Close() }
+			if c, ok := w.browser.(*edge.Chromium); ok {
+				c.Close()
+			}
 			_, _, _ = w32.User32DestroyWindow.Call(hwnd)
 		case w32.WMDestroy:
+			revokeNativeDrop(hwnd)
 			windowContextSync.Lock()
 			delete(windowContext, hwnd)
 			windowContextSync.Unlock()

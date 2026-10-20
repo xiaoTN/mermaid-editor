@@ -224,6 +224,53 @@ function rebuildChain(
     segment?: { edge: FlowEdge; text: string }
   },
 ): string[] {
+  // A fan is authored as one list. Remove just the member and its adjacent
+  // separator, rather than expanding every surviving edge into a new line.
+  if (opts.dropNodeId) {
+    const groups = chain.groups.filter(group => group.some(ref => ref.id === opts.dropNodeId))
+    if (groups.length && groups.every(group => group.length > 1)) {
+      const edits: TextEdit[] = []
+      for (const group of groups) {
+        const i = group.findIndex(ref => ref.id === opts.dropNodeId)
+        edits.push({ start: (i < group.length - 1 ? group[i].span.start : group[i - 1].span.end) - chain.span.start,
+          end: (i < group.length - 1 ? group[i + 1].span.start : group[i].span.end) - chain.span.start, text: '' })
+      }
+      return [applyEdits(slice(ctx, chain.span), edits).text]
+    }
+  }
+  if (opts.dropEdge) {
+    const i = opts.dropEdge.segIndex
+    const left = chain.groups[i], right = chain.groups[i + 1]
+    const remove = (refs: NodeRef[], id: string, text: string, offset: number) => {
+      const i = refs.findIndex(ref => ref.id === id)
+      const start = i < refs.length - 1 ? refs[i].span.start : refs[i - 1].span.end
+      const end = i < refs.length - 1 ? refs[i + 1].span.start : refs[i].span.end
+      return text.slice(0, start - offset) + text.slice(end - offset)
+    }
+    const raw = slice(ctx, chain.span)
+    const group = left.length === 1 && right.length > 1 && i === chain.edges.length - 1 ? right
+      : right.length === 1 && left.length > 1 && i === 0 ? left : null
+    if (group) {
+      const id = group === right ? opts.dropEdge.target : opts.dropEdge.source
+      const ref = group.find(ref => ref.id === id)!
+      const out = [remove(group, id, raw, chain.span.start)]
+      if (ref.shape && !ctx.graph.nodeById.get(id)?.refs.some(r => r.ref !== ref && r.ref.shape)) out.push(slice(ctx, ref.span))
+      return out
+    }
+    if (chain.edges.length === 1 && left.length > 1 && right.length > 1) {
+      // One cell of a Cartesian fan cannot be expressed by a single list.
+      // Keep row order, and keep both remaining fans in their authored form.
+      const out: string[] = []
+      const target = opts.dropEdge.target
+      const segment = slice(ctx, { start: left[left.length - 1].span.end, end: right[0].span.start })
+      for (const ref of left) {
+        const targets = slice(ctx, { start: right[0].span.start, end: right[right.length - 1].span.end })
+        out.push(slice(ctx, ref.span) + segment + (ref.id === opts.dropEdge.source
+          ? remove(right, target, targets, right[0].span.start) : targets))
+      }
+      return out
+    }
+  }
   interface Expanded {
     a: NodeRef
     b: NodeRef

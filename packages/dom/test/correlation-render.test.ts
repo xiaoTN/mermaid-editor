@@ -98,8 +98,8 @@ it.each(['zh-CN', 'en'] as const)('59: clicking a real ambiguous edge or label s
       expect(editor.selection).toEqual([])
       expect(host.querySelector('.mw-toast')?.textContent).toBe(t('canvas.ambiguous'))
       expect(host.querySelector('.mw-toast')?.textContent).toBe(locale === 'en'
-        ? 'This item cannot be edited directly on the canvas. Please edit the code.'
-        : '这一项无法在画布上直接编辑，请在代码中修改')
+        ? "This item can't be edited safely on the canvas. Please edit it in the code."
+        : '这个元素无法在画布上安全编辑，请在左侧代码里修改')
       expect(host.querySelector('.mw-popover')).toBeNull()
     }
     expect(editor.code).toBe(code)
@@ -223,7 +223,7 @@ it.each(otherDiagrams)('%s: missing real ids stay untagged even with matching el
   expect(svg.querySelector('[data-mw-entity]')).toBeNull()
 })
 
-it.each(otherDiagrams)('%s: clicking unresolved real paths and labels shows a hint without edits', async (_kind, code) => {
+it.each(otherDiagrams)('%s: clicking real preview paths and labels is silent and cannot edit', async (_kind, code) => {
   const result = await canvasFor(code, svg => {
     for (const el of svg.querySelectorAll('.edgePaths > path, .edgeLabels [data-id]')) {
       el.removeAttribute('id'); el.removeAttribute('data-id')
@@ -236,7 +236,9 @@ it.each(otherDiagrams)('%s: clicking unresolved real paths and labels shows a hi
       target.dispatchEvent(new MouseEvent('click', { bubbles: true }))
       result.host.dispatchEvent(new KeyboardEvent('keydown', { key: 'Delete', bubbles: true }))
       expect(result.editor.selection).toEqual([])
-      expect(result.host.querySelector('.mw-toast')?.textContent).toBe(t('canvas.ambiguous'))
+      expect(result.host.querySelector('.mw-toast')?.textContent).toBe('')
+      expect(result.host.querySelector('.mw-readonly-hint')?.textContent).toBe(t('canvas.previewOnly'))
+      expect(result.host.querySelector('[data-mw-entity]')).toBeNull()
       expect(result.editor.code).toBe(code)
       expect(result.editor.canUndo).toBe(false)
     }
@@ -264,15 +266,15 @@ it('a real edge whose endpoint id contains -L_ cannot impersonate another pair',
   }
 })
 
-it('a safely matched child stays selectable inside an unresolved composite state', async () => {
+it('a composite state and its children remain preview-only even with valid ids', async () => {
   const code = otherDiagrams[0][1]
   const result = await canvasFor(code, svg => {
     svg.querySelector('g.statediagram-cluster')!.id = 'unknown-composite'
   })
   try {
-    const child = result.host.querySelector('[data-mw-entity="state:a"]')!
+    const child = result.host.querySelector('g.statediagram-state')!
     child.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    expect(result.editor.selection).toEqual(['state:a'])
+    expect(result.editor.selection).toEqual([])
     expect(result.host.querySelector('.mw-toast')?.textContent).toBe('')
     expect(result.editor.code).toBe(code)
     expect(result.editor.canUndo).toBe(false)

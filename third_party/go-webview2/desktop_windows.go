@@ -23,6 +23,10 @@ type copyData struct {
 
 func droppedFiles(drop uintptr) []string {
 	defer dragFinish.Call(drop)
+	return queryDroppedFiles(drop)
+}
+
+func queryDroppedFiles(drop uintptr) []string {
 	n, _, _ := dragQuery.Call(drop, 0xffffffff, 0, 0)
 	paths := make([]string, 0, n)
 	for i := uintptr(0); i < n; i++ {
@@ -35,13 +39,14 @@ func droppedFiles(drop uintptr) []string {
 }
 
 // EnableFileDrop enables Explorer drops; OLE drops are disabled in the controller.
-func EnableFileDrop(w WebView) {
+func EnableFileDrop(w WebView) error {
 	dragAccept.Call(uintptr(w.Window()), 1)
 	if view, ok := w.(*webview); ok {
 		if c, ok := view.browser.(*edge.Chromium); ok {
 			c.DisableExternalDrop()
 		}
 	}
+	return registerNativeDrop(uintptr(w.Window()))
 }
 
 // MapHost gives the embedded app a stable secure origin for drafts and SHA-256.

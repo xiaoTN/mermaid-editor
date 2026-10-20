@@ -188,6 +188,17 @@ export class MermaidWysiwygEditor {
     this.commit(text, txn, origin)
   }
 
+  /** Load a disk document without mixing another file's edits into its history. */
+  loadCode(newCode: string): void {
+    const diff = diffText(this._code, newCode)
+    this._code = newCode
+    this._result = parse(newCode)
+    this._selection = []
+    this.undoStack = []; this.redoStack = []; this._diagnostics = []
+    this.emit('change', { code: newCode, edits: diff ? [diff] : [], origin: 'external', result: this._result })
+    this.emit('selectionChange', { entityIds: [], spans: [], origin: 'external' })
+  }
+
   /** Replace the whole document; computes a minimal diff for history. */
   setCode(newCode: string, origin: Origin = 'code'): void {
     const diff = diffText(this._code, newCode)

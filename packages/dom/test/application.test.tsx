@@ -9,6 +9,7 @@ import { DraftStore } from '../../../apps/playground/src/draft'
 import { DraftNotice } from '../../../apps/playground/src/DraftNotice'
 import { browserFiles, type FileAccess } from '../../../apps/playground/src/files'
 import { MermaidCanvasView, setLocale, t } from '../src'
+import { correlationSources } from '../../../tools/cases/correlation-sources.mts'
 
 vi.mock('../../../apps/playground/node_modules/mermaid', () => ({ default: { initialize() {}, async parse() {}, async render() {
   return { svg: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300" />' }
@@ -60,7 +61,7 @@ describe('应用线框和文件交互', () => {
     const draft = { code: 'flowchart TD\r\n\tA[甲] --> B[乙]  %% 保留\r\n', name: '原始.mmd' }
     const drafts = new DraftStore()
     const session = await drafts.open({ ...draft, code: '' }); session.edit(draft.code)
-    await mount(); await click('tb.addGroup')
+    await mount(); await click('draft.restore'); await click('tb.addGroup')
     const changed = drafts.resume()!
     expect(changed.name).toBe(draft.name)
     expect(changed.code).toContain('subgraph')
@@ -69,7 +70,8 @@ describe('应用线框和文件交互', () => {
     await act(async () => root.unmount()); root = createRoot(host); await mount()
     expect(host.querySelector('.titlebar')?.textContent).toContain(draft.name)
     expect(drafts.resume()).toMatchObject(draft)
-    expect(host.querySelector('.app-toast')?.textContent).toBe(t('draft.restored'))
+    expect(host.querySelector('.draft-notice')?.textContent).toContain(t('draft.found'))
+    expect(host.querySelector('.app-toast')).toBeNull()
   })
   it('打开沿用文件名，保存原字节；初次打开 fit，之后手动缩放不被编辑打断', async () => {
     const render = MermaidCanvasView.prototype.render
@@ -116,17 +118,18 @@ describe('应用线框和文件交互', () => {
     await click('tb.copy')
     expect(host.querySelector('.app-toast')?.textContent).toBe(t('toast.copied'))
   })
-  it('非流程图只读预览，禁止节点和分组操作', async () => {
-    const session = await new DraftStore().open({ code: '', name: 'classes.mmd' })
-    session.edit('classDiagram\n class A')
-    await mount()
+  it.each(Object.entries(correlationSources).filter(([name]) => name.startsWith('preview-')))(
+    'E2: %s opens preview-only and disables node/group additions', async (name, code) => {
+    await mount({ open: async () => ({ name: `${name}.mmd`, code }), save: vi.fn() })
+    await open(`${name}.mmd`)
     expect(host.querySelector('.mw-readonly')).not.toBeNull()
-    expect(host.querySelector('.mw-readonly-hint')?.textContent).toBe(t('toast.readonly'))
+    expect(host.querySelector('.mw-readonly-hint')?.textContent).toBe(t('canvas.previewOnly'))
     expect(button('tb.addNode').disabled).toBe(true)
     expect(button('tb.addGroup').disabled).toBe(true)
     expect(host.querySelector('.mw-popover')).toBeNull()
+    expect(document.title.endsWith(' *')).toBe(false)
   })
-  it.each(['zh-CN', 'en'] as const)('%s 刷新自动恢复并提示，保存成功清除，再重开不恢复', async locale => {
+  it.each(['zh-CN', 'en'] as const)('%s 刷新只提示，明确恢复后保存清除，再重开不恢复', async locale => {
     setLocale(locale)
     const fileAccess: FileAccess = { open: vi.fn(), save: vi.fn(async () => {}) }
     const drafts = new DraftStore()
@@ -137,7 +140,9 @@ describe('应用线框和文件交互', () => {
     const draft = drafts.resume()!
     expect(draft.code).toContain('subgraph')
     await act(async () => root.unmount()); root = createRoot(host); await mount(fileAccess)
-    expect(host.querySelector('.app-toast')?.textContent).toBe(t('draft.restored'))
+    expect(host.querySelector('.draft-notice')?.textContent).toContain(t('draft.found'))
+    expect(host.querySelector('.cm-content')?.textContent).not.toContain('group1')
+    await click('draft.restore')
     expect(host.querySelector('.cm-content')?.textContent).toContain('subgraph')
     await click('tb.save')
     expect(drafts.resume()).toBeNull()
@@ -153,7 +158,7 @@ describe('应用线框和文件交互', () => {
     await mount({ open: async () => file, save: async () => {} }); await open()
     expect(host.querySelector('.cm-content')?.textContent).toContain('A --> B')
     expect(host.querySelector('.cm-content')?.textContent).not.toContain('X --> Y')
-    expect(host.querySelector('.draft-notice')).toBeNull()
+    expect(host.querySelector('.draft-notice')?.textContent).toContain(t('draft.found'))
     expect((await drafts.open(file)).restore()).toBe(old.code)
     await click('tb.addGroup')
     expect(drafts.resume()?.code).toContain('A --> B')

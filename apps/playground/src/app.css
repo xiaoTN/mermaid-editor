@@ -51,7 +51,8 @@ button:focus-visible { outline:2px solid #2563eb; outline-offset:2px; }
 .hintbar .mw-first-hint[hidden] { display:none; }
 .hintbar .mw-first-hint button { font-size:18px; line-height:1; margin-left:12px; }
 .app-toast,.canvas .mw-toast { position:absolute; bottom:52px; right:16px; z-index:30; padding:9px 12px; max-width:calc(100% - 32px); border:1px solid #f59e0b; border-radius:9px; color:#92400e; background:#fffbeb; font:13px/1.5 system-ui; }
-.mw-changed-line { animation:mw-line-flash 2s ease-out forwards; }
-@keyframes mw-line-flash { 0%,75% { background:#fff3bd; } 100% { background:transparent; } }
+.codepane .cm-line.mw-changed-line { background:#fff3bd; box-shadow:inset 3px 0 #eab308; }
+.codepane .cm-line.mw-cm-selected-line { background:#dbeafe; }
+.codepane .cm-line.mw-changed-line.mw-cm-selected-line { background:#dbeafe; box-shadow:inset 3px 0 #eab308; }
 @media (max-width:900px) { .toolbar { gap:8px; } .toolbar-right { gap:8px; } .workspace { grid-template-columns:minmax(230px,35%) minmax(0,1fr); } }
 @media (max-width:600px) { .app { padding:0; } .toolbar-right { width:100%; } .sync-status { margin-right:auto; } .workspace { grid-template-columns:1fr; grid-template-rows:35% 65%; gap:6px; padding:0 7px 6px; } }

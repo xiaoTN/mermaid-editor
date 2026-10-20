@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { createHash } from 'node:crypto'
 import { readDocument, writeDocument, supportedFile, windowTitle } from '../../../apps/playground/src/documentFile'
 import { DraftStore, draftKey, type DraftStorage } from '../../../apps/playground/src/draft'
-import { DesktopFiles, detectDesktop, closeLabels, type ShellBindings } from '../../../apps/playground/src/desktop'
+import { DesktopFiles, detectDesktop, closeLabels, conflictLabels, type ShellBindings } from '../../../apps/playground/src/desktop'
 import { mayLeaveDocument } from '../../../apps/playground/src/lifecycle'
 import { LosslessText } from '../../codemirror/src/lossless'
 import { MermaidWysiwygEditor, bindTextPane } from '../src'
@@ -51,13 +51,14 @@ describe('桌面文件字节边界', () => {
     expect(windowTitle(zh['app.title'], '流程.md', true)).toBe('Mermaid 编辑器 — 流程.md *')
     const expected = {
       'app.untitled': ['未命名.mmd', 'untitled.mmd'], 'dlg.closeTitle': ['有未保存的修改', 'Unsaved changes'],
-      'dlg.closeBody': ['关闭前要先保存吗？', 'Save before closing?'], 'dlg.save': ['保存', 'Save'],
+      'dlg.closeBody': ['关闭前，要保存对 {name} 的修改吗？', 'Save changes to {name} before closing?'], 'dlg.save': ['保存', 'Save'],
       'dlg.dontSave': ['不保存', "Don't save"], 'dlg.cancel': ['取消', 'Cancel'],
       'dlg.openFilter': ['Mermaid 文件', 'Mermaid files'], 'dlg.saveFilter': ['Mermaid 文件', 'Mermaid files'],
     }
     for (const [key, pair] of Object.entries(expected)) expect([zh[key as keyof typeof zh], en[key as keyof typeof en]]).toEqual(pair)
     expect(Object.keys(zh).sort()).toEqual(Object.keys(en).sort())
-    setLocale('zh-CN'); expect(closeLabels()).toEqual({ title: expected['dlg.closeTitle'][0], body: expected['dlg.closeBody'][0], save: '保存', dontSave: '不保存', cancel: '取消' })
+    setLocale('zh-CN'); expect(closeLabels('订单.mmd')).toEqual({ title: expected['dlg.closeTitle'][0], body: '关闭前，要保存对 订单.mmd 的修改吗？', save: '保存', dontSave: '不保存', cancel: '取消' })
+    expect(closeLabels('订单.mmd', 'open').body).toBe('打开其他文件前，要保存对 订单.mmd 的修改吗？')
     setLocale('en'); expect(closeLabels().dontSave).toBe("Don't save"); setLocale('zh-CN')
   })
 })
@@ -130,7 +131,7 @@ describe('异步桌面桥', () => {
     const host = fakeHost(), bridge = detectDesktop(host)!
     expect(bridge).toBeInstanceOf(DesktopFiles)
     const first = bridge.open('D:\\a.mmd'), second = bridge.open('D:\\b.mmd')
-    expect(host.meOpen).toHaveBeenCalledWith(1, 'D:\\a.mmd', 'Mermaid 文件')
+    expect(host.meOpen).toHaveBeenCalledWith(1, 'D:\\a.mmd', 'Mermaid 文件', '所有文件 (*.*)')
     host.onMe!({ id: 2, value: { name: 'b.mmd', code: 'b', path: 'D:\\b.mmd' } })
     host.onMe!({ id: 1, value: null })
     expect(await first).toBeNull(); expect((await second)?.path).toBe('D:\\b.mmd')
@@ -138,10 +139,10 @@ describe('异步桌面桥', () => {
   it('保存/另存为使用原始快照，取消不算成功，错误上报', async () => {
     const host = fakeHost(), bridge = new DesktopFiles(host), file = { code, name: 'a.mmd', path: 'D:\\a.mmd' }
     const save = bridge.save(file)
-    expect(host.meSave).toHaveBeenCalledWith(1, file, 'Mermaid 文件')
+    expect(host.meSave).toHaveBeenCalledWith(1, file, 'Mermaid 文件', '所有文件 (*.*)', conflictLabels(file.name))
     host.onMe!({ id: 1, value: null }); expect(await save).toBeNull()
     const as = bridge.saveAs(file)
-    expect(host.meSaveAs).toHaveBeenCalledWith(2, file, 'Mermaid 文件')
+    expect(host.meSaveAs).toHaveBeenCalledWith(2, file, 'Mermaid 文件', '所有文件 (*.*)', conflictLabels(file.name))
     host.onMe!({ id: 2, error: '磁盘只读' }); await expect(as).rejects.toThrow('磁盘只读')
     vi.mocked(host.meOpen).mockRejectedValueOnce(new Error('桥断开'))
     await expect(bridge.open()).rejects.toThrow('桥断开')

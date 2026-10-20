@@ -1,5 +1,12 @@
 // Sources shared by real Mermaid regression tests and the numbered case runner.
 export const correlationSources = {
+  'preview-class': 'classDiagram\n A --> B: owns\n',
+  'preview-state': 'stateDiagram-v2\n A --> B: next\n',
+  'preview-er': 'erDiagram\n A ||--o{ B : owns\n',
+  'preview-sequence': 'sequenceDiagram\n participant Alice\n participant Bob\n Alice->>Bob: Hello\n Bob-->>Alice: Hi\n',
+  'preview-gantt': 'gantt\n dateFormat YYYY-MM-DD\n section Work\n Task :task, 2026-10-20, 2d\n',
+  'preview-pie': 'pie\n "One" : 40\n "Two" : 60\n',
+  'preview-members': 'classDiagram\n class Account {\n +String name\n +save()\n }\n',
   'node-boundaries': `flowchart TB
   subgraph A["甲"]
     a["节点a"]

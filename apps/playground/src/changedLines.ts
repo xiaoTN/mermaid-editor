@@ -22,6 +22,39 @@ export function changedLines({ edits, code }: ChangeEvent): number[] {
   return [...lines]
 }
 
+/** Compare against disk, independent of selection and of the latest operation. */
+export function diskChangedLines(baseline: string, code: string): number[] {
+  if (baseline === code) return []
+  const a = baseline.split('\n'), b = code.split('\n')
+  let first = 0, endA = a.length, endB = b.length
+  while (first < endA && first < endB && a[first] === b[first]) first++
+  while (endA > first && endB > first && a[endA - 1] === b[endB - 1]) { endA--; endB-- }
+  const m = endA - first, n = endB - first
+  const changed = new Set<number>()
+  if (m * n > 1_000_000) {
+    for (let j = first; j < endB; j++) changed.add(j + 1)
+  } else {
+    const table = Array.from({ length: m + 1 }, () => new Uint32Array(n + 1))
+    for (let i = m - 1; i >= 0; i--) for (let j = n - 1; j >= 0; j--) {
+      table[i][j] = a[first + i] === b[first + j] ? 1 + table[i + 1][j + 1] : Math.max(table[i + 1][j], table[i][j + 1])
+    }
+    let i = 0, j = 0
+    while (i < m || j < n) {
+      if (i < m && j < n && a[first + i] === b[first + j]) { i++; j++ }
+      else {
+        const start = j
+        while ((i < m || j < n) && !(i < m && j < n && a[first + i] === b[first + j])) {
+          if (j < n && (i === m || table[i][j + 1] >= table[i + 1][j])) j++
+          else i++
+        }
+        if (j === start) changed.add(Math.min(first + j + 1, b.length))
+        else for (let k = start; k < j; k++) changed.add(first + k + 1)
+      }
+    }
+  }
+  return [...changed].sort((x, y) => x - y)
+}
+
 export const flashLines = StateEffect.define<number[]>()
 export const flashField = StateField.define<DecorationSet>({
   create: () => Decoration.none,

@@ -84,7 +84,7 @@ const BASE_CSS = `
 .mw-canvas .mw-svg-host { min-height: 100%; display: flex; align-items: flex-start; justify-content: center; padding: 16px; box-sizing: border-box; }
 .mw-canvas svg { max-width: 100%; height: auto; }
 .mw-canvas.mw-panzoom { overflow: hidden; }
-.mw-canvas.mw-panzoom .mw-svg-host { position: absolute; inset: 0; display: block; padding: 0; min-height: 0; overflow: hidden; }
+.mw-canvas.mw-panzoom .mw-svg-host { position: absolute; inset: 0; display: block; padding: 0; min-height: 0; overflow: auto; }
 .mw-canvas.mw-panzoom .mw-svg-host svg { position: absolute; left: 0; top: 0; max-width: none; height: auto; transform-origin: 0 0; }
 .mw-canvas.mw-panzoom .mw-svg-host { cursor: grab; }
 .mw-canvas.mw-panzoom.mw-panning .mw-svg-host { cursor: grabbing; }
@@ -214,7 +214,8 @@ export class MermaidCanvasView {
   /** which of an entity's twin elements the user clicked (popover anchor) */
   private popoverAnchorPick: { entityId: string; index: number } | null = null
   private tool: Tool = 'select'
-  private readOnly: boolean
+  private requestedReadOnly: boolean
+  private get readOnly(): boolean { return this.requestedReadOnly || this.editor.result.typeInfo?.id !== 'flowchart' }
   private debounceMs: number
   private defaultEdge: { line?: EdgeLine; arrowEnd?: EdgeArrow }
   private hooks: ViewHooks
@@ -268,7 +269,7 @@ export class MermaidCanvasView {
     this.editor = options.editor
     this.container = options.container
     this.mermaid = options.mermaid
-    this.readOnly = options.readOnly ?? false
+    this.requestedReadOnly = options.readOnly ?? false
     this.panZoomEnabled = options.panZoom ?? false
     this.debounceMs = options.debounceMs ?? 200
     this.defaultEdge = options.defaultEdge ?? {}
@@ -315,7 +316,10 @@ export class MermaidCanvasView {
           el.setAttribute('aria-placeholder', t('edit.placeholder'))
         })
       }),
-      this.editor.on('change', () => this.scheduleRender()),
+      this.editor.on('change', () => {
+        if (this.container.classList.contains('mw-readonly') !== this.readOnly) this.setReadOnly(this.requestedReadOnly)
+        this.scheduleRender()
+      }),
       this.editor.on('selectionChange', () => this.applySelectionStyles()),
     )
 
@@ -371,12 +375,13 @@ export class MermaidCanvasView {
   }
 
   setReadOnly(readOnly: boolean) {
-    this.readOnly = readOnly
+    this.requestedReadOnly = readOnly
     this.notices.update()
-    this.container.classList.toggle('mw-readonly', readOnly)
+    this.container.classList.toggle('mw-readonly', this.readOnly)
     this.closeInlineEditor(false)
     this.cancelConnect()
     this.clearLifelineUi()
+    this.applySelectionStyles()
     this.updatePopover()
   }
 
@@ -414,6 +419,9 @@ export class MermaidCanvasView {
 
   private setupPanZoom() {
     this.container.classList.add('mw-panzoom')
+    const onScroll = () => this.updatePopover()
+    this.svgHost.addEventListener('scroll', onScroll)
+    this.disposers.push(() => this.svgHost.removeEventListener('scroll', onScroll))
 
     const onWheel = (e: WheelEvent) => {
       // trackpad pinch arrives as ctrl+wheel; plain wheel keeps scrolling the page
@@ -428,6 +436,8 @@ export class MermaidCanvasView {
     this.disposers.push(() => this.container.removeEventListener('wheel', onWheel))
 
     const onDown = (e: PointerEvent) => {
+      this.suppressNextClick = false
+      if (this.editor.result.typeInfo?.id !== 'flowchart') return
       if (e.button !== 0) return
       if (this.tool === 'connect' || e.altKey) return
       if (this.inlineInput || this.inPlaceSession) return
@@ -473,12 +483,12 @@ export class MermaidCanvasView {
         this.updatePopover()
       }
     }
-    this.container.addEventListener('pointerdown', onDown)
+    this.container.addEventListener('pointerdown', onDown, true)
     this.container.addEventListener('pointermove', onMove)
     this.container.addEventListener('pointerup', onUp)
     this.container.addEventListener('pointercancel', onUp)
     this.disposers.push(() => {
-      this.container.removeEventListener('pointerdown', onDown)
+      this.container.removeEventListener('pointerdown', onDown, true)
       this.container.removeEventListener('pointermove', onMove)
       this.container.removeEventListener('pointerup', onUp)
       this.container.removeEventListener('pointercancel', onUp)
@@ -524,8 +534,8 @@ export class MermaidCanvasView {
   private zoomAt(clientX: number, clientY: number, factor: number) {
     if (!this.panZoomEnabled) return
     const rect = this.container.getBoundingClientRect()
-    const px = clientX - rect.left
-    const py = clientY - rect.top
+    const px = clientX - rect.left + this.svgHost.scrollLeft
+    const py = clientY - rect.top + this.svgHost.scrollTop
     const next = Math.min(Math.max(this.zoomScale * factor, 0.1), 4)
     const k = next / this.zoomScale
     if (k === 1) return
@@ -546,9 +556,10 @@ export class MermaidCanvasView {
     const pad = 28
     const { width, height } = this.svgSize
     const s = Math.min((cw - pad * 2) / width, (ch - pad * 2) / height)
-    this.zoomScale = Math.min(Math.max(s, 0.1), 2)
-    this.zoomTx = (cw - width * this.zoomScale) / 2
-    this.zoomTy = (ch - height * this.zoomScale) / 2
+    this.zoomScale = Math.min(Math.max(s, 0.6), 2)
+    this.zoomTx = Math.max(pad, (cw - width * this.zoomScale) / 2)
+    this.zoomTy = Math.max(pad, (ch - height * this.zoomScale) / 2)
+    this.svgHost.scrollTo?.(0, 0)
     this.hasUserView = false
     this.applyViewTransform()
     this.updatePopover()
@@ -571,7 +582,8 @@ export class MermaidCanvasView {
     if (!svg) return
     let width = 0
     let height = 0
-    const vb = svg.viewBox?.baseVal
+    const values = svg.getAttribute('viewBox')?.trim().split(/[\s,]+/).map(Number)
+    const vb = svg.viewBox?.baseVal ?? (values?.length === 4 ? { width: values[2], height: values[3] } : undefined)
     if (vb && vb.width && vb.height) {
       width = vb.width
       height = vb.height
@@ -670,23 +682,9 @@ export class MermaidCanvasView {
   private bindSvg() {
     const svg = this.svg
     if (!svg) return
-    const { flowchart, sequence, state, classGraph, er } = this.editor.result
-    this.correlation = flowchart
-      ? correlateFlowchart(svg, flowchart)
-      : state
-        ? correlateState(svg, state)
-        : classGraph
-          ? correlateClass(svg, classGraph)
-          : er
-            ? correlateEr(svg, er)
-            : this.editor.result.pie
-              ? correlatePie(svg, this.editor.result.pie)
-              : this.editor.result.gantt
-                ? correlateGantt(svg, this.editor.result.gantt)
-                : this.editor.result.lineItems
-                  ? correlateLineItems(svg, this.editor.result.lineItems)
-                  : null
-    this.seqCorrelation = sequence ? correlateSequence(svg, sequence) : null
+    const { flowchart } = this.editor.result
+    this.correlation = flowchart ? correlateFlowchart(svg, flowchart) : null
+    this.seqCorrelation = null
     for (const path of svg.querySelectorAll<SVGPathElement>('path[data-mw-entity^="edge:"], path[data-mw-ambiguous]')) {
       const hit = path.cloneNode(false) as SVGPathElement
       hit.removeAttribute('id')
@@ -774,6 +772,7 @@ export class MermaidCanvasView {
   }
 
   private onSvgClick(e: MouseEvent) {
+    if (this.readOnly) return
     // pointer capture during a connect gesture retargets the click to the svg
     // root; the pointerup handler has already decided what the gesture meant
     if (this.suppressNextClick) {
@@ -1435,6 +1434,7 @@ export class MermaidCanvasView {
   // ----- keyboard -----
 
   private onKeyDown(e: KeyboardEvent) {
+    if (this.readOnly) return
     if (this.inlineInput) return
     const mod = e.metaKey || e.ctrlKey
     if (mod && e.key.toLowerCase() === 'z') {
@@ -1465,6 +1465,7 @@ export class MermaidCanvasView {
   private applySelectionStyles() {
     if (!this.svg) return
     this.svg.querySelectorAll('.mw-selected').forEach((el) => el.classList.remove('mw-selected'))
+    if (this.readOnly) { this.updatePopover(); return }
     for (const id of this.editor.selection) {
       this.svg.querySelectorAll(`[data-mw-entity="${CSS.escape(id)}"]`).forEach((el) => {
         el.classList.add('mw-selected')

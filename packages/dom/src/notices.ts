@@ -13,7 +13,7 @@ export function mountNotices(host: HTMLElement, editor: MermaidWysiwygEditor, re
     toast.textContent = notices.map(n => t(n.key, n.params)).join(' ')
     text.textContent = t('hint.firstRun'); close.textContent = '×'; close.setAttribute('aria-label', t('hint.close')); close.title = t('hint.close')
     hint.hidden = dismissed || readonly()
-    badge.hidden = !readonly(); badge.textContent = t('toast.readonly')
+    badge.hidden = !readonly(); badge.textContent = t(editor.result.typeInfo?.id !== 'flowchart' ? 'canvas.previewOnly' : 'toast.readonly')
   }
   close.onclick = () => {
     dismissed = true
@@ -37,5 +37,5 @@ export const NOTICE_CSS = `
 .mw-toast:empty { display:none; }
 .mw-first-hint { position:absolute; bottom:8px; left:8px; right:8px; color:#69a3ff; font:12px/1.5 system-ui; }
 .mw-first-hint button { color:inherit; background:none; border:0; cursor:pointer; }
-.mw-readonly-hint { position:absolute; bottom:8px; left:8px; color:#a1a1a1; font:12px/1.5 system-ui; }
+.mw-readonly-hint { position:absolute; top:0; left:0; right:0; z-index:7; padding:9px 12px; border-bottom:1px solid #bfdbfe; background:#eff6ff; color:#1d4ed8; font:13px/1.5 system-ui; pointer-events:none; }
 `

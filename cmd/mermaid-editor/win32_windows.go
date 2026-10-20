@@ -67,12 +67,16 @@ type openFileName struct {
 }
 
 // pickFile must only run inside Dispatch, after a binding callback has returned.
-func pickFile(hwnd uintptr, save bool, name, filterLabel string) (string, error) {
+func fileFilter(filterLabel, allFiles string) []uint16 {
+	return utf16.Encode([]rune(filterLabel + " (*.mmd;*.mermaid;*.md;*.txt)\x00*.mmd;*.mermaid;*.md;*.txt\x00" + allFiles + "\x00*.*\x00\x00"))
+}
+
+func pickFile(hwnd uintptr, save bool, name, filterLabel, allFiles string) (string, error) {
 	buf := make([]uint16, 32768)
 	if save {
 		copy(buf, utf16.Encode([]rune(filepath.Base(name))))
 	}
-	filter := utf16.Encode([]rune(filterLabel + " (*.mmd;*.mermaid;*.md;*.txt)\x00*.mmd;*.mermaid;*.md;*.txt\x00\x00"))
+	filter := fileFilter(filterLabel, allFiles)
 	ext, _ := syscall.UTF16PtrFromString("mmd")
 	of := openFileName{Size: uint32(unsafe.Sizeof(openFileName{})), Owner: hwnd,
 		Filter: &filter[0], FilterIndex: 1, File: &buf[0], MaxFile: uint32(len(buf)),
@@ -105,10 +109,29 @@ type closeLabels struct {
 
 // A thread-scoped CBT hook gives the system MessageBox its product labels.
 func confirmClose(hwnd uintptr, labels closeLabels) string {
+	return confirmThreeLabels(hwnd, labels.Title, labels.Body, labels.Save, labels.DontSave, labels.Cancel, "save", "discard", 0)
+}
+
+type conflictLabels struct {
+	Title     string `json:"title"`
+	Body      string `json:"body"`
+	Overwrite string `json:"overwrite"`
+	Reload    string `json:"reload"`
+	Cancel    string `json:"cancel"`
+}
+
+func confirmConflict(hwnd uintptr, labels conflictLabels) string {
+	return confirmThreeLabels(hwnd, labels.Title, labels.Body, labels.Overwrite, labels.Reload, labels.Cancel, "overwrite", "reload", 0x200)
+}
+
+func confirmThreeLabels(hwnd uintptr, titleText, bodyText, first, second, cancel, yes, no string, defaultButton uintptr) string {
 	thread, _, _ := pGetCurrentThreadId.Call()
 	callback := syscall.NewCallback(func(code int32, wp, lp uintptr) uintptr {
 		if code == 5 { // HCBT_ACTIVATE
-			for id, label := range map[uintptr]string{6: labels.Save, 7: labels.DontSave, 2: labels.Cancel} {
+			for id, label := range map[uintptr]string{6: first, 7: second, 2: cancel} {
+				if label == "" {
+					continue
+				}
 				text, _ := syscall.UTF16PtrFromString(label)
 				pSetDlgItemTextW.Call(wp, id, uintptr(unsafe.Pointer(text)))
 			}
@@ -121,14 +144,14 @@ func confirmClose(hwnd uintptr, labels closeLabels) string {
 		return "cancel"
 	}
 	defer pUnhookWindowsHookEx.Call(hook)
-	body, _ := syscall.UTF16PtrFromString(labels.Body)
-	title, _ := syscall.UTF16PtrFromString(labels.Title)
-	r, _, _ := pMessageBoxW.Call(hwnd, uintptr(unsafe.Pointer(body)), uintptr(unsafe.Pointer(title)), 0x3|0x30|0x000 /* YESNOCANCEL|WARNING|DEFBUTTON1 (Save) */)
+	body, _ := syscall.UTF16PtrFromString(bodyText)
+	title, _ := syscall.UTF16PtrFromString(titleText)
+	r, _, _ := pMessageBoxW.Call(hwnd, uintptr(unsafe.Pointer(body)), uintptr(unsafe.Pointer(title)), 0x3|0x30|defaultButton)
 	if r == 6 {
-		return "save"
+		return yes
 	}
 	if r == 7 {
-		return "discard"
+		return no
 	}
 	return "cancel"
 }

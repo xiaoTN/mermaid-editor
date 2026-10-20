@@ -106,7 +106,7 @@ describe('语言包和界面', () => {
       await act(async () => { addGroup!.click() })
       expect(page.querySelector('.mw-changed-line')).not.toBeNull()
       await act(async () => { await vi.advanceTimersByTimeAsync(2000) })
-      expect(page.querySelector('.mw-changed-line')).toBeNull()
+      expect(page.querySelector('.mw-changed-line')).not.toBeNull()
       vi.useRealTimers()
     } finally { vi.useRealTimers(); await act(async () => root.unmount()); page.remove() }
     editor.setSelection(['node:A'])
