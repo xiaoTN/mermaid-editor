@@ -28,6 +28,7 @@ export default {
   'tb.redo': "重做",
   'tb.addNode': "+ 节点",
   'tb.addGroup': "+ 分组",
+  'tb.groupHint': "按住 Shift 多选节点，再点这里创建分组",
   'tb.copy': "复制代码",
   'ui.newGroup': "新分组",
   'status.synced': "已同步，改动 {n} 行",

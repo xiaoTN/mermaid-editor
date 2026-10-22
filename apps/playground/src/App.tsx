@@ -48,6 +48,7 @@ export default function App({ fileAccess = desktop ?? browserFiles }: { fileAcce
   const initializing = useRef<Promise<DraftSession> | null>(null)
   const [ready, setReady] = useState(!!resumed)
   const canvas = useRef<HTMLDivElement>(null)
+  const additions = useRef<HTMLDivElement>(null)
   const hint = useRef<HTMLElement>(null)
   const view = useRef<MermaidCanvasView | null>(null)
   const fileInput = useRef<HTMLInputElement>(null)
@@ -83,6 +84,7 @@ export default function App({ fileAccess = desktop ?? browserFiles }: { fileAcce
     if (!canvas.current) return
     const next = new MermaidCanvasView({ editor, container: canvas.current, mermaid,
       mermaidConfig: canvasConfig, accentColor: '#2563eb', panZoom: true,
+      selectionControls: additions.current ? [additions.current] : [],
       readOnly: editor.result.typeInfo?.id !== 'flowchart', hintContainer: hint.current ?? undefined })
     view.current = next
     const off = next.on('render', () => setParseError(!!next.renderError))
@@ -240,9 +242,12 @@ export default function App({ fileAccess = desktop ?? browserFiles }: { fileAcce
         <Button disabled={!editor.canUndo} onClick={() => editor.undo()}>{t('tb.undo')}</Button>
         <Button disabled={!editor.canRedo} onClick={() => editor.redo()}>{t('tb.redo')}</Button>
       </div>
-      <div className="tool-group additions">
+      <div ref={additions} className="tool-group additions">
         <Button disabled={!editable} onClick={() => editor.dispatch({ type: 'addNode', label: t('drag.newNode') })}>{t('tb.addNode')}</Button>
-        <Button disabled={!editable} onClick={() => editor.dispatch({ type: 'addSubgraph', title: t('ui.newGroup') })}>{t('tb.addGroup')}</Button>
+        <Button disabled={!editable} title={t('tb.groupHint')} onClick={() => editor.dispatch({
+          type: 'addSubgraph', title: t('ui.newGroup'),
+          nodeIds: editor.selection.filter(id => id.startsWith('node:')).map(id => id.slice(5)),
+        })}>{t('tb.addGroup')}</Button>
       </div>
       <div className="toolbar-right">
         <span className={`sync-status${parseError ? ' error' : ''}`} role="status" aria-live="polite">

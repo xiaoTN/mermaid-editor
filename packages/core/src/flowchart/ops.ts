@@ -5,7 +5,7 @@ import { SHAPE_DELIMS, type ChainStmt, type EdgeArrow, type EdgeLine, type FlowS
 
 export type FlowchartOp =
   | { type: 'addNode'; shape?: ShapeId; label?: string; id?: string; subgraph?: string }
-  | { type: 'addSubgraph'; title: string }
+  | { type: 'addSubgraph'; title: string; nodeIds?: string[] }
   | { type: 'connect'; source: string; target: string; line?: EdgeLine; arrowEnd?: EdgeArrow; label?: string; insideGroup?: boolean }
   | { type: 'renameNode'; id: string; label: string }
   | { type: 'setNodeShape'; id: string; shape: ShapeId }
@@ -513,6 +513,19 @@ export function compileFlowchartOp(ctx: FlowOpContext, op: FlowchartOp): OpResul
       let n = 1
       while (graph.nodeById.has(`group${n}`) || graph.subgraphs.some(group => group.id === `group${n}`)) n++
       const id = `group${n}`, indent = bodyIndent(ctx)
+      if (op.nodeIds?.length) {
+        // Mermaid 以最先闭合的分组确定节点归属，前置声明可接纳已有分组中的节点。
+        // 仅插入成员引用，保留原有节点定义、连线顺序、样式和注释的全部字节。
+        const members: string[] = []
+        for (const nodeId of new Set(op.nodeIds)) {
+          const node = graph.nodeById.get(nodeId)
+          if (!node || graph.subgraphs.some(group => group.id === node.id)) return null
+          members.push(`${indent}${indent || '  '}${node.id}`)
+        }
+        return { edits: [insertLinesAfter(ctx, graph.headerLine, [
+          `${indent}subgraph ${id}[${printLabel(op.title, false)}]`, ...members, `${indent}end`,
+        ])], created: [`subgraph:${id}`] }
+      }
       return { edits: [insertLinesAfter(ctx, graph.lastContentLine, [
         `${indent}subgraph ${id}[${printLabel(op.title, false)}]`, `${indent}end`,
       ])], created: [`subgraph:${id}`] }

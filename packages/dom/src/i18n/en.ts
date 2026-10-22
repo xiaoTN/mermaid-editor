@@ -26,6 +26,7 @@ export default {
   'tb.redo': "Redo",
   'tb.addNode': "+ Node",
   'tb.addGroup': "+ Group",
+  'tb.groupHint': "Shift-click nodes, then click here to group them",
   'tb.copy': "Copy code",
   'ui.newGroup': "New group",
   'status.synced': "Synced, {n} line(s) changed",

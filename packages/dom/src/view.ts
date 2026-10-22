@@ -60,6 +60,8 @@ export interface ViewOptions {
   readOnly?: boolean
   /** Optional host for the full-width first-run hint. */
   hintContainer?: HTMLElement
+  /** 点击这些画布外控件时保留选区，供分组等依赖选区的操作使用。 */
+  selectionControls?: readonly HTMLElement[]
   /**
    * 画布首次渲染时自动适配，双指滑动或拖动空白处平移；
    * Ctrl/Cmd 加滚轮或触控板捏合缩放，也可使用角落的缩放按钮。
@@ -326,20 +328,19 @@ export class MermaidCanvasView {
     this.container.addEventListener('keydown', keydown)
     this.disposers.push(() => this.container.removeEventListener('keydown', keydown))
 
-    // interacting anywhere outside the canvas deselects: the popover, the
-    // lifeline plus-menu, and any open editing session must not linger while
-    // the user works elsewhere (e.g. a host app's own pan controls)
+    // 点击画布外关闭浮层；依赖选区的工具栏控件仍可使用当前选择。
     const docPointerDown = (e: PointerEvent) => {
       const target = e.target as Node | null
       if (!target || this.container.contains(target)) return
       this.inPlaceSession?.finish?.(true)
-      // the overlay editor commits itself via its own blur handler
+      // 覆盖层编辑器会通过自己的失焦事件提交。
       this.clearLifelineUi()
       this.popover.hide()
-      if (this.editor.selection.length) this.editor.clearSelection('canvas')
+      if (this.editor.selection.length && !options.selectionControls?.some(control => control.contains(target))) {
+        this.editor.clearSelection('canvas')
+      }
     }
-    // capture phase: other widgets on the page (e.g. CodeMirror) stop the
-    // bubbling pointerdown before it would reach the document
+    // 使用捕获阶段，避免 CodeMirror 等控件先阻止指针事件冒泡。
     document.addEventListener('pointerdown', docPointerDown, true)
     this.disposers.push(() => document.removeEventListener('pointerdown', docPointerDown, true))
 

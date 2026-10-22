@@ -10,6 +10,7 @@ import { DraftNotice } from '../../../apps/playground/src/DraftNotice'
 import { browserFiles, type FileAccess } from '../../../apps/playground/src/files'
 import { MermaidCanvasView, setLocale, t } from '../src'
 import { correlationSources } from '../../../tools/cases/correlation-sources.mts'
+import mermaid from '../../../apps/playground/node_modules/mermaid'
 
 vi.mock('../../../apps/playground/node_modules/mermaid', () => ({ default: { initialize() {}, async parse() {}, async render() {
   return { svg: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300" />' }
@@ -56,6 +57,44 @@ describe('应用线框和文件交互', () => {
     expect(host.querySelector('.language-switch button.active')?.textContent).toBe('EN')
     expect(host.querySelector('.language-switch')?.getAttribute('aria-label')).toBe('Switch interface language')
     expect(host.querySelector('select')).toBeNull()
+  })
+  it('多选后按下工具栏分组按钮仍保留选区，创建分组后一次撤销恢复', async () => {
+    vi.spyOn(mermaid, 'render').mockImplementation(async id => ({ svg:
+      `<svg id="${id}" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300">${['A', 'B', 'C', 'D', 'E'].map((node, i) =>
+        `<g class="node" id="${id}-flowchart-${node}-${i}"><rect width="40" height="20"/><text>${node}</text></g>`).join('')}</svg>`,
+    }))
+    let view!: MermaidCanvasView
+    const render = MermaidCanvasView.prototype.render
+    vi.spyOn(MermaidCanvasView.prototype, 'render').mockImplementation(async function () {
+      view = this
+      await render.call(this)
+    })
+    await mount()
+    const original = view.editor.code
+    const node = (id: string) => host.querySelector(`[data-mw-entity="node:${id}"]`)!
+    await act(async () => {
+      node('A').dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      node('C').dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true }))
+    })
+    expect(view.editor.selection).toEqual(['node:A', 'node:C'])
+    expect(button('tb.addGroup').title).toBe(t('tb.groupHint'))
+    await act(async () => {
+      button('tb.addGroup').dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, button: 0 }))
+      expect(view.editor.selection).toEqual(['node:A', 'node:C'])
+      button('tb.addGroup').click()
+    })
+    const graph = view.editor.result.flowchart!
+    expect(graph.nodes.filter(n => n.subgraph === 'group1').map(n => n.id)).toEqual(['A', 'C'])
+    expect(graph.nodeById.get('B')?.subgraph).toBeNull()
+    expect(graph.nodeById.get('E')?.subgraph).toBe('支付')
+    expect(new DraftStore().resume()?.code).toBe(view.editor.code)
+    await click('tb.undo')
+    expect(view.editor.code).toBe(original)
+    expect(view.editor.selection).toEqual(['node:A', 'node:C'])
+    await act(async () => {
+      host.querySelector('.titlebar')!.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+    })
+    expect(view.editor.selection).toEqual([])
   })
   it('恢复草稿原始字节，画布修改自动保存，撤销可恢复，重载仍有草稿', async () => {
     const draft = { code: 'flowchart TD\r\n\tA[甲] --> B[乙]  %% 保留\r\n', name: '原始.mmd' }
