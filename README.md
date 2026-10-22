@@ -1,159 +1,120 @@
-本项目 fork 自 [inkeep/mermaid-wysiwyg](https://github.com/inkeep/mermaid-wysiwyg)（MIT），核心解析和撤销机制来自原项目；中文 ID、改边端点、linkStyle 重算、Windows 外壳等为本项目新增。
+# Mermaid 编辑器
 
-## Windows 桌面版 0.1.0
+在画布上整理流程，在代码里保留细节。Mermaid 编辑器把源码编辑、图形操作和本地文件读写放在一个界面中，适合绘制业务流程、梳理系统关系，以及维护 Markdown 里的流程图。
 
-双击 `dist/mermaid-editor.exe` 即可运行，无需安装程序。需要已安装 Microsoft Edge WebView2 Runtime；缺少时会显示中文说明。
+项目提供浏览器版和 Windows 桌面版，两者共用编辑界面。图表始终以 Mermaid 文本保存，方便继续编辑、放进文档或交给 Git 管理。
 
-- 打开、保存、另存为使用系统对话框，支持 `.mmd`、`.mermaid`、`.md`、`.txt`；支持拖入文件，以及把文件作为 exe 的启动参数。
-- `Ctrl+O` 打开，`Ctrl+S` 保存，`Ctrl+Shift+S` 另存为。标题中的 ` *` 表示尚未保存；关闭时可选保存、不保存或取消。
-- Markdown 只编辑第一个完整 Mermaid 围栏代码块，保留其余原始字节；保存时重新读取正文，保留期间发生的块外修改。其他格式按 UTF-8 原样读写，保留 BOM、CRLF、tab、注释及行尾空格。
-- 打开真实路径时，草稿按路径和完整打开内容的 SHA-256 匹配；顶部提供恢复/丢弃，默认仍使用磁盘内容。直接启动自动恢复最近草稿。选择“不保存”关闭后仍可在下次启动恢复草稿。
-- 数据位于 `%LOCALAPPDATA%\mermaid-editor`，WebView2 数据位于其 `WebView2` 子目录，日志为 `mermaid-editor.log`，按 1 MiB 轮转。程序内嵌前端，启动时释放单个页面到数据目录，映射固定本地域名以持久保存草稿。
+## 编辑体验
 
-在 Windows PowerShell 中构建（复用 `apps/playground`）：
+- **代码与画布同步**：修改源码后更新预览，在画布上编辑后回写源码，两边共用撤销和重做历史。
+- **直接修改流程图**：双击编辑文字，拖动连接点建立连线，拖动端点改变指向，调整节点形状、连线和样式。
+- **批量整理节点**：框选、追加选择、批量修改，或把选中的节点放进新分组；支持调整节点所属分组、连接分组和解散分组。
+- **切换图表方向**：点击方向按钮，在向下、向右、向上、向左之间循环切换，支持撤销。
+- **留出画布空间**：源码区可收起再展开，保留光标、滚动位置和编辑历史；画布支持平移、缩放和触控板双指平移。
+- **照顾中文内容**：支持中文节点 ID、中文界面，也可以切换到英文。
+
+当前应用的画布交互面向流程图（`flowchart`）。其他图表类型通过源码编辑和 Mermaid 预览使用，暂不开放画布编辑。
+
+## 本地启动
+
+准备 Node.js 和 pnpm；仓库使用 `pnpm@10.33.0`。在仓库根目录执行：
+
+```bash
+pnpm install
+pnpm dev
+```
+
+浏览器访问 <http://localhost:5173>。默认端口被占用时，开发服务会退出，可以指定其他端口：
+
+```bash
+pnpm --filter playground dev --host 127.0.0.1 --port 5174
+```
+
+使用 Codex 时，也可以点击项目里的“启动编辑器”操作，它使用 `5174` 端口。
+
+把下面的内容粘贴到源码区，即可开始编辑：
+
+```mermaid
+flowchart LR
+  需求[整理需求] --> 方案{方案确认}
+  方案 -->|通过| 实现[开始实现]
+  方案 -->|调整| 需求
+  实现 --> 验证[验证效果]
+```
+
+## 打开与保存
+
+支持 `.mmd`、`.mermaid`、`.md` 和 `.txt` 文件，也可以直接将文件拖入编辑器。
+
+浏览器版通过“打开”读取本地文件，“保存”会下载编辑后的文件。Windows 桌面版通过系统对话框打开、保存和另存为，可直接写回原文件。
+
+打开 Markdown 时，只编辑第一个完整的 Mermaid 围栏代码块，保留代码块外的正文。桌面版保存前会重新读取文件，以保留编辑期间发生的块外修改；发现外部改动时，会根据当前编辑状态重新加载或提示处理。
+
+编辑器会记录本地草稿，发现未保存的内容时提供“恢复”和“丢弃”选项。标题中的 `*` 表示当前内容尚未保存。草稿用于恢复编辑现场，正式文件仍需主动保存。
+
+## Windows 桌面版
+
+桌面版使用 Go 和 WebView2，构建产物为 `dist/mermaid-editor.exe`。双击即可启动，也可以把文件路径作为启动参数。运行环境需要 Microsoft Edge WebView2 Runtime。
+
+常用快捷键：
+
+| 操作 | 快捷键 |
+| --- | --- |
+| 打开文件 | `Ctrl+O` |
+| 保存 | `Ctrl+S` |
+| 另存为 | `Ctrl+Shift+S` |
+
+关闭未保存的文档时，可选择保存、不保存或取消。选择“不保存”会清除该文档的草稿。
+
+在 Windows PowerShell 中构建，需要先安装前端依赖，并准备 Go 工具链：
 
 ```powershell
+pnpm install
+.\tools\windows\build.ps1
+```
+
+脚本会构建并内嵌前端页面，使用 Go 1.24.4 生成 Windows amd64 程序，再执行 Go 静态检查和测试。需要将程序复制到桌面时运行：
+
+```powershell
+.\tools\windows\build.ps1 -CopyToDesktop
+```
+
+应用数据和日志位于 `%LOCALAPPDATA%\mermaid-editor`，WebView2 数据放在其中的 `WebView2` 子目录。日志文件为 `mermaid-editor.log`，按 1 MiB 轮转。
+
+## 开发与检查
+
+```bash
+pnpm test
+pnpm typecheck
+pnpm exec tsx tools/cases/run-cases.mts
+```
+
+构建编辑页面：
+
+```bash
 pnpm --filter playground build
-Copy-Item apps\playground\dist\index.html cmd\mermaid-editor\index.html -Force
-$env:GOTOOLCHAIN='go1.24.4'; $env:CGO_ENABLED='0'; $env:GOOS='windows'; $env:GOARCH='amd64'
-go build -trimpath -ldflags "-s -w -H windowsgui" -o dist\mermaid-editor.exe .\cmd\mermaid-editor
-go vet ./...
-go test ./...
-pnpm -r run test
-npx tsx tools\cases\run-cases.mts
 ```
 
-也可执行 `tools\windows\build.ps1` 完成构建和 Go 检查；附加 `-CopyToDesktop` 会复制为桌面的 `Mermaid编辑器.exe`。`node tools/windows/smoke.mjs` 通过独立数据目录启动实际 exe 并验证前端与原生文件桥，不影响日常草稿。
+产物位于 `apps/playground/dist/index.html`，前端脚本和样式打包到单个 HTML 中。根目录的 `pnpm build` 用于构建工作区里的基础包。
 
-外壳的 WebView2 消息循环、派发队列看门狗、单实例、用户数据目录选择、日志及剪贴板基础代码复制自 `D:\Projects\gitdash`；本项目新增文件桥、关闭拦截和文件拖入。第三方许可证保留在 `third_party/go-webview2/LICENSE`，根目录 `LICENSE` 保持不变。
+Windows 原生文件桥的冒烟检查需要在 Windows 上先构建桌面程序，再运行：
 
-<div align="center">
-
-# mermaid-wysiwyg
-
-**Visual editing for Mermaid diagrams. Every gesture becomes a minimal text edit.**
-
-Click, drag, and type directly on the diagram; your Mermaid source updates surgically.
-Type in the code; the canvas follows live. One document, two surfaces, zero lock-in.
-
-[![MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
-[![Mermaid 11](https://img.shields.io/badge/mermaid-v11-ff3670.svg)](https://mermaid.js.org)
-[![Types](https://img.shields.io/badge/types-included-3178c6.svg)](#packages)
-
-</div>
-
----
-
-## Why
-
-Mermaid has become the diagram language of choice for Markdown files. The mermaid ecosystem lacked open source visual editors. Consumers had to use proprietary tools or one-way exporters. `mermaid-wysiwyg` keeps **text as the source of truth**: the canvas is Mermaid's own SVG with an interaction layer on top, and every visual action (rename, connect, reorder, restyle) compiles to the smallest possible edit against your actual source. Comments, whitespace, and formatting are never touched. Drag one edge,\
-get a one-line diff.
-
-## Quick start
-
-```bash
-npm i @inkeep/mermaid-wysiwyg-core @inkeep/mermaid-wysiwyg-dom mermaid
+```powershell
+node tools/windows/smoke.mjs
 ```
 
-```ts
-import mermaid from 'mermaid'
-import { MermaidWysiwygEditor } from '@inkeep/mermaid-wysiwyg-core'
-import { MermaidCanvasView } from '@inkeep/mermaid-wysiwyg-dom'
+该检查使用独立数据目录，避免影响日常草稿。
 
-const editor = new MermaidWysiwygEditor({
-  code: 'flowchart TD\n  A[Start] --> B{OK?}\n  B -->|yes| C[Ship]',
-})
+## 目录导航
 
-new MermaidCanvasView({
-  editor,
-  container: document.querySelector('#canvas')!,
-  mermaid,
-  mermaidConfig: { theme: 'dark' },
-})
-
-editor.on('change', ({ code }) => console.log(code)) // always-current source
-```
-
-Try everything locally:
-
-```bash
-pnpm install && pnpm dev   # playground at http://localhost:5173
-```
-
-## What you can do
-
-- **Edit text in place**: double-click any label and type right on the diagram; nodes grow as you type
-- **Drag to connect** nodes, states, classes, entities, participants, with a ghost edge preview
-- **Drag to reorder** sequence messages; the statements reorder in source
-- **Popovers on every entity**: shape/type/arrow pickers, cardinalities, color swatches, fragments, notes
-- **One undo stack** across canvas and code (⌘Z anywhere)
-- **Error tolerant**: broken syntax mid-keystroke never blanks the canvas
-- **Lossless**: unknown syntax is preserved verbatim; your diff is only what you changed
-
-## Diagram support
-
-**22 of 23 Mermaid diagram types are editable.**
-
-| Type | View | Item editing | Structural editing |
-|---|:---:|:---:|:---:|
-| [flowchart](https://mermaid.js.org/syntax/flowchart.html) | ✅ | ✅ | ✅ |
-| [sequence](https://mermaid.js.org/syntax/sequenceDiagram.html) | ✅ | ✅ | ✅ |
-| [state](https://mermaid.js.org/syntax/stateDiagram.html) | ✅ | ✅ | ✅ |
-| [class](https://mermaid.js.org/syntax/classDiagram.html) | ✅ | ✅ | ✅ |
-| [ER](https://mermaid.js.org/syntax/entityRelationshipDiagram.html) | ✅ | ✅ | ✅ |
-| [pie](https://mermaid.js.org/syntax/pie.html) | ✅ | ✅ | ✅ |
-| [gantt](https://mermaid.js.org/syntax/gantt.html) | ✅ | ✅ | ✅ |
-| [journey](https://mermaid.js.org/syntax/userJourney.html) | ✅ | ✅ | ❌ |
-| [timeline](https://mermaid.js.org/syntax/timeline.html) | ✅ | ✅ | ❌ |
-| [quadrant](https://mermaid.js.org/syntax/quadrantChart.html) | ✅ | ✅ | ❌ |
-| [kanban](https://mermaid.js.org/syntax/kanban.html) | ✅ | ✅ | ❌ |
-| [mindmap](https://mermaid.js.org/syntax/mindmap.html) | ✅ | ✅ | ❌ |
-| [treemap](https://mermaid.js.org/syntax/treemap.html) | ✅ | ✅ | ❌ |
-| [packet](https://mermaid.js.org/syntax/packet.html) | ✅ | ✅ | ❌ |
-| [sankey](https://mermaid.js.org/syntax/sankey.html) | ✅ | ✅ | ❌ |
-| [radar](https://mermaid.js.org/syntax/radar.html) | ✅ | ✅ | ❌ |
-| [gitgraph](https://mermaid.js.org/syntax/gitgraph.html) | ✅ | ✅ | ❌ |
-| [xychart](https://mermaid.js.org/syntax/xyChart.html) | ✅ | ✅ | ❌ |
-| [requirement](https://mermaid.js.org/syntax/requirementDiagram.html) | ✅ | ✅ | ❌ |
-| [C4](https://mermaid.js.org/syntax/c4.html) | ✅ | ✅ | ❌ |
-| [architecture](https://mermaid.js.org/syntax/architecture.html) | ✅ | ✅ | ❌ |
-| [block](https://mermaid.js.org/syntax/block.html) | ✅ | ✅ | ❌ |
-| [zenuml](https://mermaid.js.org/syntax/zenuml.html) | ✅ | ❌ | ❌ |
-
-**Item editing** is select, edit in place, add, and delete; **structural editing** adds connect, reorder, and restyle. Every type round-trips losslessly and syncs selection between code and canvas, including view-only zenuml (an external plugin).
-
-## Packages
-
-| Package | Purpose |
-|---|---|
-| `@inkeep/mermaid-wysiwyg-core` | Headless engine: lossless CST, semantic graphs, ops → minimal text edits, unified history. Zero DOM deps |
-| `@inkeep/mermaid-wysiwyg-dom` | Interactive canvas: renders through your `mermaid` instance, correlates SVG ⇄ graph, all gestures |
-| `@inkeep/mermaid-wysiwyg-codemirror` | CodeMirror 6 pane: two-way sync, entity decorations, mermaid syntax highlighting, shared undo |
-| `@inkeep/mermaid-wysiwyg-monaco` | Monaco binding for an editor instance you own; zero monaco dependency of its own |
-| `@inkeep/mermaid-wysiwyg-react` | React bindings: `<MermaidWysiwyg code onCodeChange />` drop-in component plus `useMermaidEditor` hook |
-
-The code-editor integration is a contract, not a dependency. `core` exposes
-`bindTextPane`, a five-method adapter that gives any editor the same two-way sync;
-the CodeMirror and Monaco packages are implementations of it, and neither is pulled
-in unless you install it (editor libraries are peer dependencies or absent entirely).
-Some other editor? Implement the adapter, it's about forty lines.
-
-## Design
-
-```
-      code (source of truth)
-        ⇅ minimal TextEdits
-   lossless CST → semantic graph
-        ⇅                ⇅
-  CodeMirror pane   Mermaid SVG + overlay
-```
-
-## How the canvas works
-
-We never re-implement rendering. Mermaid draws the SVG, untouched. A small per-type correlator then matches every element back to its source line, using id conventions, draw order, or label text, and tags it. All interaction hangs off those tags.
-
-Anything we can't match degrades to view-only; the diagram still renders perfectly and the code stays editable. The tradeoff is that correlation leans on Mermaid's internal DOM, which can shift between releases. It's contained, because correlators are tiny, isolated, and fail soft. That's the price of pixel-perfect fidelity, and it beats owning a renderer that's wrong in a hundred small ways.
-
-## License
-
-[MIT](./LICENSE) © [Inkeep](https://inkeep.com)
+| 目录 | 内容 |
+| --- | --- |
+| `apps/playground` | 日常使用的编辑器界面、文件操作和草稿管理 |
+| `cmd/mermaid-editor` | Windows 桌面程序入口 |
+| `internal` | 原生文件读写、日志等 Go 模块 |
+| `packages/core` | Mermaid 解析、编辑操作和撤销历史 |
+| `packages/dom` | 画布交互、元素定位和界面语言 |
+| `packages/codemirror` | CodeMirror 源码编辑器集成 |
+| `packages/monaco`、`packages/react` | Monaco 和 React 集成 |
+| `apps/js-playground`、`apps/mermaidraw` | 其他演示入口 |
+| `tools`、`testdata` | 构建脚本、用例运行器和测试素材 |
