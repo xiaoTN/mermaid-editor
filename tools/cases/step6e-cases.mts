@@ -222,23 +222,18 @@ export async function createStep6eCases(root: string, document: Document): Promi
         undo(c.editor, code)
       } finally { c.destroy() }
     }],
-    ['6e-drag-menu', '6e 拖线：落在分组空白/标题弹新节点菜单，在该组建节点，可取消或一步撤销', async () => {
+    ['6e-drag-group', '6e 拖线：落在分组空白或标题直接连到分组，保留节点数量且支持一次撤销', async () => {
       for (const target of ['rect', '.cluster-label']) {
         const c = await canvas()
         try {
           const group = c.entity('subgraph:decor')
           const nodeCount = c.host.querySelectorAll('g.node').length
-          c.drag('goods', group.querySelector(target)!)
-          assert(c.host.querySelector('.mw-new-node-menu')); assert.equal(c.editor.code, louvre)
-          c.button('menu.cancel').click(); assert(!c.editor.canUndo)
-          c.drag('goods', group.querySelector(target)!)
-          c.button('drag.newNode').click()
-          const graph = c.editor.result.flowchart!, node = graph.nodes.find(n => n.label === t('drag.newNode'))!
-          assert(node); assert.equal(node.subgraph, 'decor')
-          assert(graph.edges.some(e => e.source === 'goods' && e.target === node.id))
-          assert.equal(graph.edges.filter(e => e.source === 'goods' && e.target === 'decor').length, 1)
+          c.drag('queue', group.querySelector(target)!, () => assert(group.classList.contains('mw-connect-target')))
+          assert.equal(c.host.querySelector('.mw-new-node-menu'), null)
+          const graph = c.editor.result.flowchart!
+          assert.equal(graph.edges.filter(e => e.source === 'queue' && e.target === 'decor').length, 1)
           await c.view.render(); assert.equal(c.view.renderError, null)
-          assert.equal(c.host.querySelectorAll('g.node').length, nodeCount + 1)
+          assert.equal(c.host.querySelectorAll('g.node').length, nodeCount)
           undo(c.editor, louvre)
         } finally { c.destroy() }
       }

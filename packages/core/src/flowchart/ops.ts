@@ -206,8 +206,9 @@ function lastRefLine(graph: FlowGraph, ids: string[]): number {
   let found = -1
   for (const id of ids) {
     const n = graph.nodeById.get(id)
-    if (!n) continue
-    for (const r of n.refs) found = Math.max(found, r.lineIndex)
+    for (const r of n?.refs ?? []) found = Math.max(found, r.lineIndex)
+    const group = exactGroup(graph, id)
+    if (group) found = Math.max(found, group.endLine)
   }
   return found === -1 ? last : found
 }
@@ -454,6 +455,49 @@ function exactGroup(graph: FlowGraph, id: string) {
   return groups.length === 1 && groups[0].endLine > groups[0].openLine ? groups[0] : null
 }
 
+/** 分组无需先被连线引用，也可以直接作为箭头端点。 */
+function endpointOf(graph: FlowGraph, id: string) {
+  if (graph.subgraphs.some(group => group.id === id)) {
+    const group = exactGroup(graph, id)
+    return group ? { subgraph: group.parent, refs: graph.nodeById.get(id)?.refs ?? [] } : null
+  }
+  return nodeOf(graph, id)
+}
+
+/** Mermaid 无法绘制分组与自身或其内部成员之间的循环包含关系。 */
+function containsEndpoint(graph: FlowGraph, groupId: string, id: string): boolean {
+  if (!exactGroup(graph, groupId)) return false
+  const visited = new Set<string>()
+  let parent: string | null | undefined = id
+  while (parent && !visited.has(parent)) {
+    if (parent === groupId) return true
+    visited.add(parent)
+    parent = endpointOf(graph, parent)?.subgraph
+  }
+  return false
+}
+
+function invalidGroupConnection(graph: FlowGraph, source: string, target: string) {
+  return containsEndpoint(graph, source, target) || containsEndpoint(graph, target, source)
+}
+
+/** 新引用应放在端点声明之后；跨组连线还需越过外层 end，避免改变成员归属。 */
+function connectionLine(graph: FlowGraph, source: string, target: string, insideGroup = false): number {
+  const src = endpointOf(graph, source)!, tgt = endpointOf(graph, target)!
+  let after = lastRefLine(graph, [source, target])
+  const shared = insideGroup && src.subgraph === tgt.subgraph && src.subgraph ? exactGroup(graph, src.subgraph) : null
+  if (shared) {
+    after = Math.max(shared.openLine, ...[...src.refs, ...tgt.refs]
+      .filter(ref => ref.lineIndex > shared.openLine && ref.lineIndex < shared.endLine).map(ref => ref.lineIndex),
+      ...[source, target].map(id => exactGroup(graph, id)?.endLine ?? -1))
+  } else if (src.subgraph !== tgt.subgraph || exactGroup(graph, source) || exactGroup(graph, target)) {
+    for (const group of graph.subgraphs) {
+      if (group.openLine <= after && group.endLine > after) after = group.endLine
+    }
+  }
+  return after
+}
+
 function ungroup(ctx: FlowOpContext, id: string): OpResult | null {
   const group = exactGroup(ctx.graph, id)
   if (!group) return null
@@ -545,9 +589,12 @@ export function compileFlowchartOp(ctx: FlowOpContext, op: FlowchartOp): OpResul
     }
 
     case 'connect': {
-      const src = nodeOf(graph, op.source)
-      const tgt = nodeOf(graph, op.target)
+      const src = endpointOf(graph, op.source)
+      const tgt = endpointOf(graph, op.target)
       if (!src || !tgt) return null
+      if (invalidGroupConnection(graph, op.source, op.target)) {
+        return { edits: [], warnings: [{ key: 'toast.groupCycle' }] }
+      }
       const line = op.line ?? 'solid'
       const arrowEnd = line === 'invisible' ? 'open' : op.arrowEnd ?? 'arrow'
       if (hasDuplicateEdge(graph, op.source, op.target,
@@ -556,20 +603,7 @@ export function compileFlowchartOp(ctx: FlowOpContext, op: FlowchartOp): OpResul
       }
       const opStr = edgeOpString(line, arrowEnd)
       const label = op.label ? `|${printEdgeLabel(op.label)}|` : ''
-      let after = lastRefLine(graph, [op.source, op.target])
-      // Canvas drags explicitly request the common group's scope, even when
-      // later references to its nodes appear outside it. Keep API placement stable.
-      const shared = op.insideGroup && src.subgraph === tgt.subgraph && src.subgraph ? exactGroup(graph, src.subgraph) : null
-      if (shared) {
-        after = Math.max(shared.openLine, ...[...src.refs, ...tgt.refs]
-          .filter(ref => ref.lineIndex > shared.openLine && ref.lineIndex < shared.endLine).map(ref => ref.lineIndex))
-      } else if (src.subgraph !== tgt.subgraph) {
-        // A cross-subgraph reference must be outside the enclosing subgraphs,
-        // otherwise Mermaid may move an existing endpoint into that subgraph.
-        for (const subgraph of graph.subgraphs) {
-          if (subgraph.openLine <= after && subgraph.endLine > after) after = subgraph.endLine
-        }
-      }
+      const after = connectionLine(graph, op.source, op.target, op.insideGroup)
       const indent = ctx.lines[after].kind === 'statement' ? ctx.lines[after].indent : bodyIndent(ctx)
       const text = `${indent}${op.source} ${opStr}${label} ${op.target}`
       const occ = graph.edges.filter((e) => e.source === op.source && e.target === op.target).length
@@ -723,14 +757,37 @@ export function compileFlowchartOp(ctx: FlowOpContext, op: FlowchartOp): OpResul
 
     case 'retargetEdge': {
       const edge = findEdge(graph, op.edgeId)
-      if (!edge || !nodeOf(graph, op.nodeId) || edge[op.end] === op.nodeId) return null
+      if (!edge || !endpointOf(graph, op.nodeId) || edge[op.end] === op.nodeId) return null
       const source = op.end === 'source' ? op.nodeId : edge.source
       const target = op.end === 'target' ? op.nodeId : edge.target
+      if (invalidGroupConnection(graph, source, target)) {
+        return { edits: [], warnings: [{ key: 'toast.groupCycle' }] }
+      }
       if (hasDuplicateEdge(graph, source, target, edge.seg, edge)) {
         return { edits: [], warnings: [{ key: 'toast.dupEdge' }] }
       }
       const stmt = graph.statements.get(edge.lineIndex)?.[edge.stmtIndex]
       if (!stmt || stmt.kind !== 'chain') return null
+      const groupEndpoint = exactGroup(graph, op.nodeId)
+      const needsMove = groupEndpoint && (graph.subgraphs.some(group => group.openLine <= edge.lineIndex && group.endLine > edge.lineIndex) ||
+        [source, target].some(id => (exactGroup(graph, id)?.endLine ?? -1) > edge.lineIndex))
+      if (needsMove) {
+        // 保留原位置的节点声明，仅将选中的边移出分组，防止目标分组被纳入原分组。
+        const changes: StatementChanges = new Map([[stmt, rebuildChain(ctx, edge.lineIndex, stmt, {
+          dropEdge: { segIndex: edge.segIndex, source: edge.source, target: edge.target },
+        })]])
+        const left = stmt.groups[edge.segIndex], right = stmt.groups[edge.segIndex + 1]
+        const segment = slice(ctx, { start: left[left.length - 1].span.end, end: right[0].span.start })
+        const after = connectionLine(graph, source, target)
+        const indent = ctx.lines[after].indent
+        const moved = { ...edge, source, target }
+        const before = [...graph.edges.filter(item => item !== edge), moved]
+        const edits = structuralEdits(ctx, before, changes, [insertLinesAfter(ctx, after, [`${indent}${source}${segment}${target}`])])
+        const lines = scanLines(applyEdits(ctx.code, edits).text)
+        const { headerIndex } = classifyLines(lines)
+        const created = buildFlowGraph(lines, headerIndex).edges.filter(item => item.source === source && item.target === target && item.seg.edgeId === edge.seg.edgeId).at(-1)!.entityId
+        return { edits, created: [created] }
+      }
       const ref = op.end === 'source' ? edge.sourceRef : edge.targetRef
       const shared = graph.edges.some((other) => other !== edge &&
         other.lineIndex === edge.lineIndex && other.stmtIndex === edge.stmtIndex &&
@@ -738,8 +795,7 @@ export function compileFlowchartOp(ctx: FlowOpContext, op: FlowchartOp): OpResul
       const changes: StatementChanges = new Map()
       const extra: TextEdit[] = []
       if (shared) {
-        // Expand in the original edge order, then re-chain adjacent surviving
-        // refs. Moving a later fan/chain edge to the top changes linkStyle order.
+        // 按原有边序展开，再合并相邻引用，避免改变 linkStyle 对应的边。
         changes.set(stmt, rebuildChain(ctx, edge.lineIndex, stmt, { retarget: { edge, end: op.end, nodeId: op.nodeId } }))
       } else {
         const node = nodeOf(graph, ref.id)!
@@ -750,8 +806,7 @@ export function compileFlowchartOp(ctx: FlowOpContext, op: FlowchartOp): OpResul
         if (preserve) {
           extra.push(insertLinesBefore(ctx, edge.lineIndex, [ctx.lines[edge.lineIndex].indent + slice(ctx, ref.span)]))
         }
-        // Decorations belong to the old node, even if another declaration of
-        // that node already exists. Never attach them to the new endpoint.
+        // 节点形状、文字和样式属于原节点，不能跟随箭头转移给新端点。
         extra.push({ start: ref.span.start, end: ref.span.end, text: op.nodeId })
       }
       const before = graph.edges.map((item) => item === edge ? { ...item, [op.end]: op.nodeId } : item)

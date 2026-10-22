@@ -1,7 +1,18 @@
 import { t, onLocaleChange } from './i18n'
 import { MermaidWysiwygEditor, diffText, type EditorNotice } from '@inkeep/mermaid-wysiwyg-core'
 
-/** Flowchart chrome is separate from Mermaid's SVG so its original IDs survive. */
+/** 优先命中内部节点；分组自身的标题、边框和空白也可作为端点。 */
+export function flowchartEndpoint(host: HTMLElement, hit: Element | null): Element | null {
+  const entity = hit?.closest('[data-mw-entity], [data-mw-ambiguous]')
+  if (!entity || !host.contains(entity) || entity.hasAttribute('data-mw-ambiguous')) return null
+  return /^(node|subgraph):/.test(entity.getAttribute('data-mw-entity') ?? '') ? entity : null
+}
+
+function endpointId(element: Element): string {
+  return element.getAttribute('data-mw-entity')!.replace(/^(node|subgraph):/, '')
+}
+
+/** 连线控件独立于 Mermaid 的 SVG，保留渲染器生成的原始 ID。 */
 export class FlowchartGestures {
   private ports = document.createElement('div')
   private ends = document.createElement('div')
@@ -24,7 +35,7 @@ export class FlowchartGestures {
     }
     listen(host, 'pointerover', (e: PointerEvent) => {
       if (this.drag || this.readonly() || !editor.result.flowchart) return
-      const node = (e.target as Element).closest?.('[data-mw-entity^="node:"]')
+      const node = flowchartEndpoint(this.host, e.target as Element)
       if (node) { this.hovered = node; this.showPorts(node) }
       else if (!(e.target as Element).closest?.('.mw-ports')) this.clearPorts()
     })
@@ -57,7 +68,7 @@ export class FlowchartGestures {
     b.addEventListener('pointerdown', e => {
       if (e.button !== 0 || this.readonly()) return
       e.preventDefault(); e.stopPropagation()
-      try { b.setPointerCapture?.(e.pointerId) } catch { /* synthetic pointer */ }
+      try { b.setPointerCapture?.(e.pointerId) } catch { /* 合成指针事件可能不支持捕获。 */ }
       start(e)
     })
     b.addEventListener('click', e => e.stopPropagation())
@@ -66,7 +77,7 @@ export class FlowchartGestures {
 
   private showPorts(node: Element) {
     this.ports.replaceChildren()
-    const id = node.getAttribute('data-mw-entity')!.slice(5), p = this.at(node)
+    const id = endpointId(node), p = this.at(node)
     for (const [x, y] of [[p.x + p.w / 2, p.y], [p.x + p.w, p.y + p.h / 2], [p.x + p.w / 2, p.y + p.h], [p.x, p.y + p.h / 2]]) {
       this.dot(this.ports, x, y, t('aria.connectDot'), e => {
         this.drag = { source: id, x: e.clientX, y: e.clientY, pointerId: e.pointerId }
@@ -99,7 +110,7 @@ export class FlowchartGestures {
         }
       }
       this.dot(this.ends, x, y, t('aria.edgeEndDot'), e => {
-        // Both endpoints share product copy; data identifies their semantics.
+        // 两端使用相同的操作提示，通过 data-end 区分起点和终点。
         this.drag = { edgeId: id, end, x: e.clientX, y: e.clientY, pointerId: e.pointerId }
         this.clearPorts()
       })
@@ -110,11 +121,12 @@ export class FlowchartGestures {
   private move(e: PointerEvent) {
     if (!this.drag || e.pointerId !== this.drag.pointerId) return
     this.target?.classList.remove('mw-connect-target')
-    this.target = document.elementFromPoint(e.clientX, e.clientY)?.closest('[data-mw-entity^="node:"]') ?? null
-    if (this.target && !this.host.contains(this.target)) this.target = null
+    this.target = flowchartEndpoint(this.host, document.elementFromPoint(e.clientX, e.clientY))
     this.target?.classList.add('mw-connect-target')
-    const id = this.target?.getAttribute('data-mw-entity')?.slice(5)
-    this.hint.textContent = id ? t('drag.dropOn', { name: this.editor.result.flowchart?.nodeById.get(id)?.label ?? id }) : ''
+    const id = this.target ? endpointId(this.target) : null
+    const graph = this.editor.result.flowchart
+    const group = graph?.subgraphs.find(group => group.id === id)
+    this.hint.textContent = id ? t('drag.dropOn', { name: group?.title ?? graph?.nodeById.get(id)?.label ?? id }) : ''
     const h = this.host.getBoundingClientRect()
     this.hint.style.left = `${e.clientX - h.left + this.host.scrollLeft + 12}px`
     this.hint.style.top = `${e.clientY - h.top + this.host.scrollTop + 12}px`
@@ -134,10 +146,7 @@ export class FlowchartGestures {
   private finish(e: PointerEvent) {
     if (!this.drag || e.pointerId !== this.drag.pointerId) return
     this.move(e)
-    const drag = this.drag, target = this.target?.getAttribute('data-mw-entity')?.slice(5)
-    const hit = document.elementFromPoint(e.clientX, e.clientY)
-    const cluster = hit?.closest('[data-mw-entity^="subgraph:"]')
-    const subgraph = cluster && this.host.contains(cluster) ? cluster.getAttribute('data-mw-entity')!.slice(9) : undefined
+    const drag = this.drag, target = this.target ? endpointId(this.target) : null
     this.cancel()
     if (this.readonly()) return
     if (drag.edgeId && target) {
@@ -146,7 +155,7 @@ export class FlowchartGestures {
       const result = this.editor.dispatch({ type: 'connect', source: drag.source, target, insideGroup: true })
       if (result?.edits.length) this.directionNotice(drag.source, target)
     } else if (drag.source && !target) {
-      this.newNodeMenu(drag.source, e.clientX, e.clientY, subgraph)
+      this.newNodeMenu(drag.source, e.clientX, e.clientY)
     }
     this.refresh()
   }
@@ -156,7 +165,8 @@ export class FlowchartGestures {
     if (!graph) return
     const groups = (id: string) => {
       const ids = new Set<string>()
-      let group = graph.nodeById.get(id)?.subgraph
+      const endpointGroup = graph.subgraphs.find(group => group.id === id)
+      let group = endpointGroup ? endpointGroup.parent : graph.nodeById.get(id)?.subgraph
       while (group && !ids.has(group)) { ids.add(group); group = graph.subgraphs.find(sg => sg.id === group)?.parent }
       return ids
     }
@@ -167,7 +177,7 @@ export class FlowchartGestures {
     if (notices.length) this.notify(notices)
   }
 
-  private newNodeMenu(source: string, x: number, y: number, subgraph?: string) {
+  private newNodeMenu(source: string, x: number, y: number) {
     this.host.querySelector('.mw-new-node-menu')?.remove()
     const menu = document.createElement('div'); menu.className = 'mw-plus-menu mw-new-node-menu'
     const b = document.createElement('button'); b.textContent = t('drag.newNode'); b.setAttribute('aria-label', t('drag.newNode'))
@@ -182,10 +192,9 @@ export class FlowchartGestures {
     b.onclick = () => {
       menu.remove()
       if (this.readonly()) return
-      // Compile both semantic operations against a temporary projection. Their
-      // contiguous insertion is applied as one TextEdit and one undo entry.
+      // 在临时图上编译两个操作，再将修改合为一次编辑，保证一次撤销。
       const draft = new MermaidWysiwygEditor({ code: this.editor.code })
-      const node = draft.dispatch({ type: 'addNode', label: t('drag.newNode'), subgraph })?.created?.[0]?.slice(5)
+      const node = draft.dispatch({ type: 'addNode', label: t('drag.newNode') })?.created?.[0]?.slice(5)
       if (!node) return
       const edge = draft.dispatch({ type: 'connect', source, target: node, insideGroup: true })?.created
       const edit = diffText(this.editor.code, draft.code)

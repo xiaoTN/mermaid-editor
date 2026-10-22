@@ -1,6 +1,6 @@
 import { mountNotices, NOTICE_CSS } from './notices'
 import { t, onLocaleChange } from './i18n'
-import { FlowchartGestures, GESTURE_CSS } from './gestures'
+import { FlowchartGestures, flowchartEndpoint, GESTURE_CSS } from './gestures'
 import {
   MermaidWysiwygEditor,
   MESSAGE_OPS,
@@ -97,7 +97,7 @@ const BASE_CSS = `
 .mw-zoom-btn svg { width: 14px; height: 14px; }
 .mw-canvas [data-mw-entity] { cursor: pointer; }
 .mw-canvas.mw-readonly [data-mw-entity] { cursor: default; }
-.mw-canvas.mw-tool-connect [data-mw-entity^="node:"] { cursor: crosshair; }
+.mw-canvas.mw-tool-connect :is([data-mw-entity^="node:"], [data-mw-entity^="subgraph:"]) { cursor: crosshair; }
 .mw-canvas [data-mw-entity]:hover { filter: drop-shadow(0 0 3px var(--mw-accent, #6366f1)); }
 .mw-canvas .mw-selected { filter: drop-shadow(0 0 2px var(--mw-accent, #6366f1)) drop-shadow(0 0 5px var(--mw-accent, #6366f1)) !important; }
 .mw-canvas .mw-ghost-edge { stroke: var(--mw-accent, #6366f1); stroke-width: 2; stroke-dasharray: 6 4; fill: none; pointer-events: none; }
@@ -890,6 +890,7 @@ export class MermaidCanvasView {
     const entity = this.entityFromEvent(e)
     const connectable =
       entity?.startsWith('node:') ||
+      entity?.startsWith('subgraph:') ||
       entity?.startsWith('participant:') ||
       entity?.startsWith('state:') ||
       entity?.startsWith('class:') ||
@@ -967,8 +968,8 @@ export class MermaidCanvasView {
     }
     if (!this.connectSource) return
     const source = this.connectSource
-    // hit test at pointer location (ghost line has pointer-events: none)
-    const kind = source.startsWith('node:')
+    // 按指针位置命中端点，预览线不参与命中；流程图节点和分组可以互连。
+    const kind = source.startsWith('node:') || source.startsWith('subgraph:')
       ? 'node:'
       : source.startsWith('state:')
         ? 'state:'
@@ -979,8 +980,9 @@ export class MermaidCanvasView {
             : 'participant:'
     const hit = document.elementFromPoint(e.clientX, e.clientY)
     let target: string | null = null
+    if (kind === 'node:') target = flowchartEndpoint(this.container, hit)?.getAttribute('data-mw-entity') ?? null
     let el = hit as Element | null
-    while (el && el !== this.container) {
+    while (kind !== 'node:' && el && el !== this.container) {
       if (el.hasAttribute?.('data-mw-ambiguous')) break
       const entity = el.getAttribute?.('data-mw-entity')
       if (entity?.startsWith(kind)) {
@@ -994,8 +996,8 @@ export class MermaidCanvasView {
     if (target && target !== source && kind === 'node:') {
       this.editor.dispatch({
         type: 'connect',
-        source: source.slice(5),
-        target: target.slice(5),
+        source: source.replace(/^(node|subgraph):/, ''),
+        target: target.replace(/^(node|subgraph):/, ''),
         line: this.defaultEdge.line,
         arrowEnd: this.defaultEdge.arrowEnd,
       })
