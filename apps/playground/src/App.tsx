@@ -11,7 +11,6 @@ import { DraftNotice } from './DraftNotice'
 import { DesktopFiles, detectDesktop } from './desktop'
 import { supportedFile, windowTitle } from './documentFile'
 import { mayLeaveDocument } from './lifecycle'
-import { DiagramSearch } from './DiagramSearch'
 
 const desktop = detectDesktop()
 
@@ -43,7 +42,6 @@ export default function App({ fileAccess = desktop ?? browserFiles }: { fileAcce
   const [outside, setOutside] = useState<EditorFile | null>(null)
   const [parseError, setParseError] = useState(false)
   const [sourceCollapsed, setSourceCollapsed] = useState(false)
-  const [searchOpen, setSearchOpen] = useState(false)
   const [boxSelect, setBoxSelect] = useState(false)
   const sourcePanelId = useId()
   const [toast, setToast] = useState<{ key: string; reason?: string } | null>(null)
@@ -244,9 +242,6 @@ export default function App({ fileAccess = desktop ?? browserFiles }: { fileAcce
   useEffect(() => {
     const key = (event: KeyboardEvent) => {
       if (!(event.ctrlKey || event.metaKey)) return
-      if (event.key.toLowerCase() === 'f' && !(event.target as Element)?.closest('.cm-editor, [contenteditable="true"]')) {
-        event.preventDefault(); setSearchOpen(value => !value)
-      }
       if (event.key.toLowerCase() === 's') { event.preventDefault(); void save(event.shiftKey) }
       if (event.key.toLowerCase() === 'o') { event.preventDefault(); native ? void open() : fileInput.current?.click() }
     }
@@ -284,7 +279,6 @@ export default function App({ fileAccess = desktop ?? browserFiles }: { fileAcce
         })}>{t('tb.addGroup')}</Button>
       </div>
       <div className="toolbar-right">
-        <Button disabled={!editable} aria-expanded={searchOpen} onClick={() => setSearchOpen(value => !value)}>{t('search.title')}</Button>
         <span className={`sync-status${parseError ? ' error' : ''}`} role="status" aria-live="polite">
           {t(parseError ? 'status.parseError' : 'status.synced', { n: dirty ? Math.max(1, changed.length) : 0 })}
         </span>
@@ -295,8 +289,6 @@ export default function App({ fileAccess = desktop ?? browserFiles }: { fileAcce
         </div>
       </div>
     </div>
-    {searchOpen && <DiagramSearch graph={editor.result.flowchart} onLocate={id => view.current?.focusEntities([id])}
-      onClose={() => { setSearchOpen(false); canvas.current?.focus() }} />}
     {outside && <div className="draft-notice file-conflict" role="status"><span>{t('file.changedOutside')}</span>
       <Button onClick={() => {
         const current = session.current

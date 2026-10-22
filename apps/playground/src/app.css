@@ -13,16 +13,6 @@ button:focus-visible { outline:2px solid #2563eb; outline-offset:2px; }
 .toolbar button[aria-pressed="true"] { color:#1d4ed8; border-color:#2563eb; background:#eff6ff; }
 .draft-notice { display:flex; flex-wrap:wrap; align-items:center; gap:10px; padding:9px 13px; border:1px solid #bfdbfe; background:#eff6ff; color:#1d4ed8; font-size:13px; }
 .draft-notice button { padding:3px 10px; border:1px solid #93c5fd; border-radius:5px; background:#fff; color:#1d4ed8; }
-.diagram-search { padding:8px 13px; background:#fff; border:1px solid #cbd1dc; border-bottom:0; font-size:13px; }
-.search-controls { display:flex; align-items:center; gap:10px; }
-.search-controls input { min-width:0; flex:1; border:1px solid #c7cdd8; border-radius:6px; padding:7px 10px; }
-.search-controls button { border:0; background:transparent; font-size:20px; }
-.search-controls span { white-space:nowrap; color:#64748b; }
-.search-results { display:flex; gap:6px; overflow:auto; max-height:140px; margin-top:6px; }
-.search-results button { min-width:140px; max-width:240px; flex-shrink:0; padding:8px 10px; border:1px solid #dfe3eb; border-radius:6px; background:#f8fafc; text-align:left; }
-.search-results button[aria-pressed="true"] { border-color:#2563eb; background:#eff6ff; }
-.search-results span,.search-results small { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.search-results small { color:#64748b; margin-top:3px; }
 .tool-group { display:flex; gap:7px; padding-right:10px; border-right:1px solid #e1e4eb; }
 .tool-group.additions { border:0; }
 .toolbar-right { display:flex; align-items:center; gap:14px; margin-left:auto; }

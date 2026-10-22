@@ -3,11 +3,6 @@ import type en from './en'
 export default {
   'tb.open': "打开",
   'tb.new': "新建",
-  'search.title': "查找定位",
-  'search.input': "搜索节点、分组、连线文字或编号",
-  'search.count': "{n} 个结果",
-  'search.empty': "没有匹配的内容",
-  'search.close': "关闭查找",
   'selection.count': "已选 {n} 项",
   'selection.box': "框选",
   'selection.boxHint': "拖出矩形选择节点；Shift 可追加，Esc 退出框选",

@@ -1,11 +1,6 @@
 export default {
   'tb.open': "Open",
   'tb.new': "New",
-  'search.title': "Find in diagram",
-  'search.input': "Search nodes, groups, edge labels or IDs",
-  'search.count': "{n} results",
-  'search.empty': "No matching content",
-  'search.close': "Close search",
   'selection.count': "{n} selected",
   'selection.box': "Box select",
   'selection.boxHint': "Drag to select nodes; Shift adds to selection, Esc exits",
