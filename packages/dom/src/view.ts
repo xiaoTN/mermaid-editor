@@ -300,7 +300,8 @@ export class MermaidCanvasView {
     this.container.append(this.svgHost, this.overlayHost, this.errorBadge)
     this.popover = new Popover(this.overlayHost)
     this.notices = mountNotices(this.container, this.editor, () => this.readOnly, options.hintContainer)
-    this.gestures = new FlowchartGestures(this.editor, this.container, () => this.readOnly, () => this.updatePopover(), notices => this.notices.show(notices))
+    this.gestures = new FlowchartGestures(this.editor, this.container, () => this.readOnly, () => this.updatePopover(), notices => this.notices.show(notices),
+      () => this.tool === 'select' && !this.inlineInput && !this.inPlaceSession, () => this.popover.hide())
 
     this.mermaid.initialize(this.mermaidConfig)
 
@@ -2177,14 +2178,20 @@ export class MermaidCanvasView {
   }
 
   destroy() {
+    // 先停止位置追踪，避免拖动产生的动画帧在画布销毁后继续刷新浮层。
+    this.svgTransformObserver?.disconnect()
+    this.svgTransformObserver = null
+    if (this.popoverFollowRaf) {
+      if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(this.popoverFollowRaf)
+      else clearTimeout(this.popoverFollowRaf)
+      this.popoverFollowRaf = 0
+    }
     this.gestures.destroy()
     this.notices.destroy()
     if (this.renderTimer) clearTimeout(this.renderTimer)
     if (this.lifelineClearTimer) clearTimeout(this.lifelineClearTimer)
     if (this.inPlaceSession?.liveTimer) clearTimeout(this.inPlaceSession.liveTimer)
     this.inPlaceSession = null
-    this.svgTransformObserver?.disconnect()
-    this.svgTransformObserver = null
     this.disposers.forEach((d) => d())
     this.closeInlineEditor(false)
     this.cancelConnect()

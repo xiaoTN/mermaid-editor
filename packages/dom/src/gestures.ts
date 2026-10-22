@@ -12,6 +12,21 @@ function endpointId(element: Element): string {
   return element.getAttribute('data-mw-entity')!.replace(/^(node|subgraph):/, '')
 }
 
+interface NodeMove {
+  node: SVGGraphicsElement
+  svg: SVGSVGElement
+  id: string
+  x: number
+  y: number
+  pointerId: number
+  transform: string | null
+  code: string
+  active: boolean
+  valid: boolean
+  group: string | null
+  target: Element | null
+}
+
 /** 连线控件独立于 Mermaid 的 SVG，保留渲染器生成的原始 ID。 */
 export class FlowchartGestures {
   private ports = document.createElement('div')
@@ -21,26 +36,36 @@ export class FlowchartGestures {
   private target: Element | null = null
   private ghost: SVGLineElement | null = null
   private hovered: Element | null = null
+  private nodeMove: NodeMove | null = null
+  private blockNodeClick = false
+  private clickTimer: ReturnType<typeof setTimeout> | null = null
   private disposers: (() => void)[] = []
 
   constructor(private editor: MermaidWysiwygEditor, private host: HTMLElement,
-    private readonly: () => boolean, private refresh: () => void, private notify: (notices: EditorNotice[]) => void) {
+    private readonly: () => boolean, private refresh: () => void, private notify: (notices: EditorNotice[]) => void,
+    private canMoveNode: () => boolean = () => true, private onNodeMove: () => void = () => {}) {
     this.ports.className = 'mw-ports'
     this.ends.className = 'mw-endpoints'
     this.hint.className = 'mw-connect-hint'
     host.append(this.ports, this.ends, this.hint)
-    const listen = (el: EventTarget, type: string, fn: (e: any) => void) => {
-      el.addEventListener(type, fn)
-      this.disposers.push(() => el.removeEventListener(type, fn))
+    const listen = (el: EventTarget, type: string, fn: (e: any) => void, capture = false) => {
+      el.addEventListener(type, fn, capture)
+      this.disposers.push(() => el.removeEventListener(type, fn, capture))
     }
     listen(host, 'pointerover', (e: PointerEvent) => {
-      if (this.drag || this.readonly() || !editor.result.flowchart) return
+      if (this.drag || this.nodeMove || this.readonly() || !editor.result.flowchart) return
       const node = flowchartEndpoint(this.host, e.target as Element)
       if (node) { this.hovered = node; this.showPorts(node) }
       else if (!(e.target as Element).closest?.('.mw-ports')) this.clearPorts()
     })
-    listen(document, 'pointermove', (e: PointerEvent) => this.move(e))
-    listen(document, 'pointerup', (e: PointerEvent) => this.finish(e))
+    listen(host, 'pointerdown', (e: PointerEvent) => this.beginNodeMove(e))
+    listen(host, 'click', (e: MouseEvent) => {
+      if (!this.blockNodeClick) return
+      this.blockNodeClick = false
+      e.preventDefault(); e.stopImmediatePropagation()
+    }, true)
+    listen(document, 'pointermove', (e: PointerEvent) => this.nodeMove ? this.moveNode(e) : this.move(e))
+    listen(document, 'pointerup', (e: PointerEvent) => this.nodeMove ? this.finishNodeMove(e) : this.finish(e))
     listen(document, 'pointercancel', () => { this.cancel(); this.update() })
     listen(document, 'keydown', (e: KeyboardEvent) => { if (e.key === 'Escape') { this.cancel(); this.update() } })
     listen(host, 'scroll', () => this.update())
@@ -53,6 +78,71 @@ export class FlowchartGestures {
       if (cancel) { cancel.textContent = t('menu.cancel'); cancel.setAttribute('aria-label', t('menu.cancel')) }
     }))
     this.disposers.push(editor.on('selectionChange', () => this.update()))
+    this.disposers.push(editor.on('change', () => this.cancel()))
+  }
+
+  private beginNodeMove(e: PointerEvent) {
+    if (this.drag || this.readonly() || !this.canMoveNode() || e.button !== 0 || e.altKey || e.shiftKey || e.metaKey || e.ctrlKey || e.detail > 1) return
+    const node = flowchartEndpoint(this.host, e.target as Element) as SVGGraphicsElement | null
+    if (!node?.getAttribute('data-mw-entity')?.startsWith('node:') || !node.ownerSVGElement) return
+    this.nodeMove = { node, svg: node.ownerSVGElement, id: endpointId(node), x: e.clientX, y: e.clientY,
+      pointerId: e.pointerId, transform: node.getAttribute('transform'), code: this.editor.code,
+      active: false, valid: false, group: null, target: null }
+  }
+
+  private moveNode(e: PointerEvent) {
+    const drag = this.nodeMove
+    if (!drag || e.pointerId !== drag.pointerId) return
+    if (this.readonly() || !this.canMoveNode() || drag.code !== this.editor.code) { this.cancel(); return }
+    let dx = e.clientX - drag.x, dy = e.clientY - drag.y
+    if (!drag.active && Math.hypot(dx, dy) < 5) return
+    e.preventDefault()
+    if (!drag.active) {
+      drag.active = true; this.clearPorts(); this.ends.replaceChildren(); this.onNodeMove()
+      drag.node.classList.add('mw-node-moving')
+      try { drag.svg.setPointerCapture?.(e.pointerId) } catch { /* 合成指针事件可能不支持捕获。 */ }
+    }
+    // 使用父级屏幕矩阵换算位移，缩放或平移画布后节点仍跟随指针。
+    const matrix = (drag.node.parentElement as unknown as SVGGraphicsElement)?.getScreenCTM?.()?.inverse()
+    if (matrix) {
+      const from = new DOMPoint(drag.x, drag.y).matrixTransform(matrix)
+      const to = new DOMPoint(e.clientX, e.clientY).matrixTransform(matrix)
+      dx = to.x - from.x; dy = to.y - from.y
+    }
+    drag.node.setAttribute('transform', `translate(${dx},${dy}) ${drag.transform ?? ''}`)
+    drag.target?.classList.remove('mw-group-drop-target')
+    const hit = document.elementFromPoint(e.clientX, e.clientY)
+    drag.valid = !!hit && this.host.contains(hit) && (drag.svg.contains(hit) || hit === this.host || !!hit.closest('.mw-svg-host')) &&
+      !hit.closest('button, input, [contenteditable="true"], .mw-popover, [data-mw-ambiguous]')
+    // Mermaid 的成员节点与分组边框不一定是 DOM 父子关系，按边框范围寻找最内层分组。
+    const candidates = drag.valid ? [...this.host.querySelectorAll('[data-mw-entity^="subgraph:"]')].flatMap(group => {
+      const box = (group.querySelector(':scope > rect') ?? group.querySelector('rect'))?.getBoundingClientRect()
+      return box && box.width > 0 && box.height > 0 && e.clientX >= box.left && e.clientX <= box.right && e.clientY >= box.top && e.clientY <= box.bottom
+        ? [{ group, area: box.width * box.height }] : []
+    }).sort((a, b) => a.area - b.area) : []
+    drag.target = candidates[0]?.group ?? null
+    drag.group = drag.target ? endpointId(drag.target) : null
+    drag.target?.classList.add('mw-group-drop-target')
+    const title = this.editor.result.flowchart?.subgraphs.find(group => group.id === drag.group)?.title ?? drag.group ?? ''
+    this.hint.textContent = !drag.valid ? t('drag.moveCancel') : drag.group ? t('drag.moveInto', { name: title }) : t('drag.moveOut')
+    const box = this.host.getBoundingClientRect()
+    this.hint.style.left = `${e.clientX - box.left + this.host.scrollLeft + 12}px`
+    this.hint.style.top = `${e.clientY - box.top + this.host.scrollTop + 12}px`
+  }
+
+  private finishNodeMove(e: PointerEvent) {
+    const drag = this.nodeMove
+    if (!drag || e.pointerId !== drag.pointerId) return
+    if (drag.active) this.moveNode(e)
+    const commit = this.nodeMove === drag && drag.active && drag.valid && drag.code === this.editor.code && !this.readonly()
+    this.cancel()
+    if (!drag.active) return
+    // 拖放后的 click 不能再次选中落点内的其他节点，也不影响下一次正常点击。
+    this.blockNodeClick = true
+    if (this.clickTimer) clearTimeout(this.clickTimer)
+    this.clickTimer = setTimeout(() => { this.blockNodeClick = false; this.clickTimer = null }, 0)
+    if (commit) this.editor.dispatch({ type: 'moveNodeToSubgraph', id: drag.id, subgraph: drag.group })
+    this.refresh()
   }
 
   private at(el: Element) {
@@ -93,6 +183,7 @@ export class FlowchartGestures {
   update() {
     this.ends.replaceChildren()
     if (this.readonly() || !this.editor.result.flowchart) { this.cancel(); this.clearPorts(); return }
+    if (this.nodeMove?.active) { this.ports.replaceChildren(); return }
     if (this.hovered?.isConnected && !this.drag) this.showPorts(this.hovered)
     else if (!this.drag) this.clearPorts()
     const id = this.editor.selection.length === 1 ? this.editor.selection[0] : ''
@@ -209,17 +300,27 @@ export class FlowchartGestures {
   }
 
   cancel() {
+    if (this.nodeMove) {
+      const { node, svg, pointerId, transform, target } = this.nodeMove
+      node.classList.remove('mw-node-moving'); target?.classList.remove('mw-group-drop-target')
+      if (transform === null) node.removeAttribute('transform'); else node.setAttribute('transform', transform)
+      try { if (svg.hasPointerCapture?.(pointerId)) svg.releasePointerCapture(pointerId) } catch { /* 取消时指针可能已经释放。 */ }
+      this.nodeMove = null
+    }
     this.drag = null; this.target?.classList.remove('mw-connect-target'); this.target = null
     this.ghost?.remove(); this.ghost = null; this.hint.textContent = ''
     this.ends.replaceChildren()
   }
 
-  destroy() { this.cancel(); this.disposers.forEach(fn => fn()); this.ports.remove(); this.ends.remove(); this.hint.remove(); this.host.querySelector('.mw-new-node-menu')?.remove() }
+  destroy() { this.cancel(); if (this.clickTimer) clearTimeout(this.clickTimer); this.disposers.forEach(fn => fn()); this.ports.remove(); this.ends.remove(); this.hint.remove(); this.host.querySelector('.mw-new-node-menu')?.remove() }
 }
 
 export const GESTURE_CSS = `
 .mw-handle { position:absolute; z-index:22; width:11px; height:11px; padding:0; border:2px solid #2563eb; border-radius:50%; background:white; transform:translate(-50%,-50%); cursor:crosshair; touch-action:none; }
 .mw-connect-target > :is(rect,polygon,path,circle,ellipse) { stroke:#2563eb !important; stroke-width:3px !important; }
+.mw-node-moving { opacity:.55; }
+.mw-node-moving, .mw-node-moving * { pointer-events:none !important; }
+.mw-group-drop-target > rect, .mw-group-drop-target.node rect { stroke:#2563eb !important; stroke-width:3px !important; stroke-dasharray:7 4; }
 .mw-connect-hint { position:absolute; z-index:23; pointer-events:none; padding:4px 8px; border-radius:4px; background:#111827; color:white; font:12px/1.4 system-ui; white-space:nowrap; }
 .mw-connect-hint:empty { display:none; }
 .mw-canvas:has(.mw-connect-target) .mw-connect-hint { background:#eff6ff; color:#2563eb; border:1px solid #93c5fd; }

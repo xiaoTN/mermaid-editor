@@ -104,7 +104,8 @@ export function correlateFlowchart(svg: SVGSVGElement, graph: FlowGraph): Correl
   const failed: string[] = []
 
   const nodeEls = [...svg.querySelectorAll<SVGGElement>('g.node')]
-  matchNodes(graph.nodes, nodeEls,
+  const groupIds = new Set(graph.subgraphs.map(group => group.id))
+  matchNodes(graph.nodes.filter(node => !groupIds.has(node.id)), nodeEls,
     (node, el) => new RegExp(`^${esc(svg.id)}-flowchart-${esc(node.id)}-\\d+$`).test(el.id), nodes, failed)
 
   const edgeEls = [...svg.querySelectorAll<SVGElement>('.edgePaths > path, path.flowchart-link')]
@@ -160,8 +161,9 @@ export function correlateFlowchart(svg: SVGSVGElement, graph: FlowGraph): Correl
   }
   for (const edge of graph.edges) if (!edges.has(edge.entityId)) failed.push(edge.entityId)
 
-  matchNodes(graph.subgraphs, [...svg.querySelectorAll<SVGGElement>('g.cluster')],
-    (sg, el) => el.id === `${svg.id}-${sg.id}`, nodes, failed)
+  // 最后一个节点移出后，Mermaid 会把空分组渲染成普通节点形状，仍需保留分组身份。
+  matchNodes(graph.subgraphs, [...svg.querySelectorAll<SVGGElement>('g.cluster'), ...nodeEls],
+    (sg, el) => el.id === `${svg.id}-${sg.id}` || new RegExp(`^${esc(svg.id)}-flowchart-${esc(sg.id)}-\\d+$`).test(el.id), nodes, failed)
 
   // Mermaid 11 puts the original edge id on the inner g.label[data-id].
   // Label containers are reordered with clusters just like paths. Correlate

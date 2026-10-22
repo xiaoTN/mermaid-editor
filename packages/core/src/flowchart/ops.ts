@@ -6,6 +6,7 @@ import { SHAPE_DELIMS, type ChainStmt, type EdgeArrow, type EdgeLine, type FlowS
 export type FlowchartOp =
   | { type: 'addNode'; shape?: ShapeId; label?: string; id?: string; subgraph?: string }
   | { type: 'addSubgraph'; title: string; nodeIds?: string[] }
+  | { type: 'moveNodeToSubgraph'; id: string; subgraph: string | null }
   | { type: 'connect'; source: string; target: string; line?: EdgeLine; arrowEnd?: EdgeArrow; label?: string; insideGroup?: boolean }
   | { type: 'renameNode'; id: string; label: string }
   | { type: 'setNodeShape'; id: string; shape: ShapeId }
@@ -498,6 +499,60 @@ function connectionLine(graph: FlowGraph, source: string, target: string, inside
   return after
 }
 
+/** 移动节点的声明和引用，连线仍保留在图中，并重新映射按边序指定的样式。 */
+function moveNodeToSubgraph(ctx: FlowOpContext, id: string, subgraph: string | null): OpResult | null {
+  const { graph } = ctx
+  const node = nodeOf(graph, id)
+  if (!node || graph.subgraphs.some(group => group.id === id) || (subgraph !== null && !exactGroup(graph, subgraph))) return null
+  // Mermaid 按分组闭合顺序决定成员归属，节点在组外提前出现也可能随后被分组收纳。
+  const current = graph.subgraphs.filter(group => group.endLine > group.openLine &&
+    node.refs.some(ref => ref.lineIndex > group.openLine && ref.lineIndex < group.endLine))
+    .sort((a, b) => a.endLine - b.endLine)[0]?.id ?? null
+  if (current === subgraph) return { edits: [] }
+
+  const incident = graph.edges.filter(edge => edge.source === id || edge.target === id)
+  const linkStyles: string[] = []
+  const changes: StatementChanges = new Map()
+  for (const stmts of graph.statements.values()) for (const stmt of stmts) {
+    if (stmt.kind === 'chain' && stmt.groups.some(refs => refs.some(ref => ref.id === id))) {
+      changes.set(stmt, rebuildChain(ctx, stmt.lineIndex, stmt, { dropNodeId: id }))
+    } else if (incident.length && stmt.kind === 'linkStyle') {
+      // Mermaid 要求按边序设置的样式位于连线之后，移动时保留原始样式文本。
+      linkStyles.push(ctx.lines[stmt.lineIndex].indent + slice(ctx, stmt.span))
+      changes.set(stmt, [])
+    }
+  }
+  const edges = incident.map(edge => {
+    const stmt = graph.statements.get(edge.lineIndex)![edge.stmtIndex] as ChainStmt
+    const left = stmt.groups[edge.segIndex], right = stmt.groups[edge.segIndex + 1]
+    return edge.source + slice(ctx, { start: left[left.length - 1].span.end, end: right[0].span.start }) + edge.target
+  })
+  const definitions = node.refs.filter(site => site.ref.shape || site.ref.attrsRaw || site.ref.classNames.length)
+  const declarations = (definitions.length ? definitions : node.refs.slice(0, 1)).map(site => slice(ctx, site.ref.span))
+  const project = (code: string): FlowOpContext => {
+    const lines = scanLines(code), { headerIndex } = classifyLines(lines)
+    return { code, lines, graph: buildFlowGraph(lines, headerIndex) }
+  }
+  let work = project(applyEdits(ctx.code, statementEdits(ctx, changes)).text)
+  const target = subgraph === null ? null : exactGroup(work.graph, subgraph)!
+  const indent = target ? work.lines[target.openLine].indent + (bodyIndent(ctx) || '  ') : bodyIndent(ctx)
+  const members = declarations.map(text => indent + text)
+  const memberEdit = target ? insertLinesBefore(work, target.endLine, members) : insertLinesAfter(work, work.graph.headerLine, members)
+  work = project(applyEdits(work.code, [memberEdit]).text)
+  if (edges.length) {
+    // 放在所有分组之后，避免连线再次将节点纳入原分组。
+    const edit = insertLinesAfter(work, work.graph.lastContentLine, [...edges.map(text => bodyIndent(ctx) + text), ...linkStyles])
+    work = project(applyEdits(work.code, [edit]).text)
+  }
+  if (incident.some(edge => invalidGroupConnection(work.graph, edge.source, edge.target))) {
+    return { edits: [], warnings: [{ key: 'toast.moveGroupCycle' }] }
+  }
+  const styles = renumberLinkStyles(work, orderPermutation(graph.edges, work.code))
+  const code = applyEdits(work.code, statementEdits(work, styles)).text
+  const edit = diffText(ctx.code, code)
+  return { edits: edit ? [edit] : [], created: [`node:${id}`] }
+}
+
 function ungroup(ctx: FlowOpContext, id: string): OpResult | null {
   const group = exactGroup(ctx.graph, id)
   if (!group) return null
@@ -553,6 +608,8 @@ export function compileFlowchartOp(ctx: FlowOpContext, op: FlowchartOp): OpResul
   const { graph } = ctx
 
   switch (op.type) {
+    case 'moveNodeToSubgraph':
+      return moveNodeToSubgraph(ctx, op.id, op.subgraph)
     case 'addSubgraph': {
       let n = 1
       while (graph.nodeById.has(`group${n}`) || graph.subgraphs.some(group => group.id === `group${n}`)) n++
