@@ -48,7 +48,7 @@ describe('应用线框和文件交互', () => {
   it('工具栏顺序、标题、单一同步状态、底栏提示和语言高亮符合产品布局', async () => {
     await mount()
     const labels = [...host.querySelectorAll('.toolbar button')].map(b => b.getAttribute('aria-label'))
-    expect(labels.slice(0, 8)).toEqual(['新建', '打开', '保存', '撤销', '重做', '+ 节点', '+ 分组', '复制代码'])
+    expect(labels.slice(0, 9)).toEqual(['新建', '打开', '保存', '撤销', '重做', '+ 节点', '+ 分组', '查找定位', '复制代码'])
     expect(host.querySelector('.titlebar')?.textContent).toBe('Mermaid 编辑器 — 图表.mmd')
     expect(host.querySelectorAll('.sync-status')).toHaveLength(1)
     expect(host.querySelector('.hintbar .mw-first-hint')).not.toBeNull()

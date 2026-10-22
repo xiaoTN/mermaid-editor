@@ -575,6 +575,26 @@ export class MermaidCanvasView {
     this.updatePopover()
   }
 
+  /** 定位已有元素，保持当前倍率；仅在选区过大时缩小到可见范围。 */
+  focusEntities(ids: string[]) {
+    const elements = ids.flatMap(id => [...this.svg?.querySelectorAll(`[data-mw-entity="${CSS.escape(id)}"]`) ?? []])
+    if (!elements.length) return
+    this.editor.setSelection(ids, 'canvas')
+    const rects = elements.map(element => element.getBoundingClientRect())
+    const left = Math.min(...rects.map(rect => rect.left)), right = Math.max(...rects.map(rect => rect.right))
+    const top = Math.min(...rects.map(rect => rect.top)), bottom = Math.max(...rects.map(rect => rect.bottom))
+    if (this.panZoomEnabled && right > left && bottom > top) {
+      const host = this.container.getBoundingClientRect()
+      const ratio = Math.min(1, Math.max(1, host.width - 80) / (right - left), Math.max(1, host.height - 100) / (bottom - top))
+      this.zoomTx = host.width / 2 - ((left + right) / 2 - host.left - this.zoomTx) * ratio
+      this.zoomTy = host.height / 2 - ((top + bottom) / 2 - host.top - this.zoomTy) * ratio
+      this.zoomScale *= ratio
+      this.hasUserView = true
+      this.applyViewTransform()
+      this.updatePopover()
+    } else if (!this.panZoomEnabled) elements[0].scrollIntoView?.({ block: 'center', inline: 'center' })
+  }
+
   private applyViewTransform() {
     if (!this.svg) return
     this.applyingOwnTransform = true

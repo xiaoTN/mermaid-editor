@@ -3,6 +3,11 @@ import type en from './en'
 export default {
   'tb.open': "打开",
   'tb.new': "新建",
+  'search.title': "查找定位",
+  'search.input': "搜索节点、分组、连线文字或编号",
+  'search.count': "{n} 个结果",
+  'search.empty': "没有匹配的内容",
+  'search.close': "关闭查找",
   'tb.newHint': "清空画布并新建（可撤销）",
   'toast.newDocument': "已新建空白图表，可点击撤销恢复原内容",
   'err.newDocument': "新建失败：{reason}",

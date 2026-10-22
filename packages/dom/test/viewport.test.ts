@@ -21,6 +21,19 @@ afterEach(() => { view.destroy(); host.remove(); vi.unstubAllGlobals() })
 const pointer = (el: Element, type: string, x = 10) => el.dispatchEvent(new MouseEvent(type, { bubbles: true, button: 0, clientX: x, clientY: 10 }))
 const viewport = () => host.querySelector<SVGSVGElement>('svg')!.style.transform.match(/translate\(([-\d.]+)px, ([-\d.]+)px\) scale\(([-\d.]+)\)/)!.slice(1).map(Number)
 
+it('定位屏幕外的节点时居中且不放大、不修改源码', () => {
+  const node = host.querySelector('[data-mw-entity="node:entry"]')!
+  vi.spyOn(host, 'getBoundingClientRect').mockReturnValue({ left: 0, top: 0, width: 400, height: 300 } as DOMRect)
+  vi.spyOn(node, 'getBoundingClientRect').mockReturnValue({ left: 900, right: 1000, top: 700, bottom: 740 } as DOMRect)
+  const before = viewport()
+  view.focusEntities(['node:entry'])
+  expect(editor.selection).toEqual(['node:entry'])
+  expect(viewport()[0]).toBeCloseTo(before[0] + 200 - 950)
+  expect(viewport()[1]).toBeCloseTo(before[1] + 150 - 720)
+  expect(viewport()[2]).toBe(before[2])
+  expect(editor.code).toBe(code); expect(editor.canUndo).toBe(false)
+})
+
 it.each(['.mw-svg-host', '[data-mw-entity="node:entry"]'])('双指滑动画布时平移视图，悬停位置为 %s', selector => {
   const target = host.querySelector(selector)!
   target.dispatchEvent(new MouseEvent('pointerover', { bubbles: true }))
