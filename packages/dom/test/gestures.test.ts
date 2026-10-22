@@ -28,7 +28,7 @@ beforeEach(async () => {
   view = new MermaidCanvasView({ editor, container: host, mermaid: fake, debounceMs: 0 })
   await view.render()
 })
-afterEach(() => { view.destroy(); host.remove(); vi.unstubAllGlobals(); setLocale('zh-CN') })
+afterEach(() => { view.destroy(); host.remove(); vi.restoreAllMocks(); vi.unstubAllGlobals(); setLocale('zh-CN') })
 
 describe.each(['zh-CN', 'en'] as const)('%s 画布手势', locale => {
   beforeEach(() => setLocale(locale))
@@ -129,6 +129,35 @@ describe.each(['zh-CN', 'en'] as const)('%s 画布手势', locale => {
     const after = editor.code
     editor.undo(); expect(editor.code).toBe(CODE); expect(editor.canUndo).toBe(false)
     editor.redo(); expect(editor.code).toBe(after)
+  })
+  it.each([false, true])('拉线新建后自动聚焦并全选文字，中文输入法确认不提前提交，HTML 标签：%s', async htmlLabel => {
+    if (htmlLabel) {
+      const render = fake.render
+      vi.spyOn(fake, 'render').mockImplementation(async (id, code) => {
+        const result = await render(id, code)
+        return { svg: result.svg.replace(/<text>(.*?)<\/text>/g,
+          '<foreignObject><div xmlns="http://www.w3.org/1999/xhtml"><span class="nodeLabel">$1</span></div></foreignObject>') }
+      })
+    }
+    pointer(find('node:A'), 'pointerover'); pointer(host.querySelector('.mw-ports button')!, 'pointerdown'); drop(null)
+    pointer(handle('新建节点'), 'click')
+    const created = editor.result.flowchart!.nodes.find(node => !['A', 'B', 'C'].includes(node.id))!
+    expect(editor.selection).toEqual([created.entityId])
+    const beforeRename = editor.code
+    await view.render()
+    const input = host.querySelector<HTMLElement>('[contenteditable="true"]')!
+    expect(input).not.toBeNull()
+    expect(document.activeElement).toBe(input)
+    expect(window.getSelection()?.toString()).toBe(t('drag.newNode'))
+    input.textContent = '确认订单'
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', isComposing: true, bubbles: true }))
+    expect(input.getAttribute('contenteditable')).toBe('true')
+    expect(editor.code).toBe(beforeRename)
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    expect(editor.result.flowchart!.nodeById.get(created.id)?.label).toBe('确认订单')
+    expect(editor.result.flowchart!.edges.some(edge => edge.source === 'A' && edge.target === created.id)).toBe(true)
+    editor.undo(); expect(editor.code).toBe(beforeRename)
+    editor.undo(); expect(editor.code).toBe(CODE)
   })
   it.each([['实线', '-->'], ['虚线', '-.->'], ['粗线', '==>']])('点击箭头切换%s，只改符号', (label, token) => {
     if (token === '-->') editor.setCode(CODE.replace('-->', '-.->'), 'api')

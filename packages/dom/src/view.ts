@@ -303,7 +303,8 @@ export class MermaidCanvasView {
     this.popover = new Popover(this.overlayHost)
     this.notices = mountNotices(this.container, this.editor, () => this.readOnly, options.hintContainer)
     this.gestures = new FlowchartGestures(this.editor, this.container, () => this.readOnly || this.tool === 'box-select', () => this.updatePopover(), notices => this.notices.show(notices),
-      () => this.tool === 'select' && !this.inlineInput && !this.inPlaceSession, () => this.popover.hide())
+      () => this.tool === 'select' && !this.inlineInput && !this.inPlaceSession, () => this.popover.hide(),
+      entityId => { this.pendingEditEntity = entityId })
 
     this.mermaid.initialize(this.mermaidConfig)
 
@@ -702,7 +703,10 @@ export class MermaidCanvasView {
       } else if (this.pendingEditEntity) {
         const entity = this.pendingEditEntity
         this.pendingEditEntity = null
-        if (this.editor.entityExists(entity)) this.editEntityLabel(entity)
+        if (this.editor.entityExists(entity)) {
+          this.focusEntities([entity])
+          this.editEntityLabel(entity)
+        }
       }
     } catch (err) {
       if (seq !== this.renderSeq) return
@@ -1307,6 +1311,7 @@ export class MermaidCanvasView {
     }
     const onKey = (e: KeyboardEvent) => {
       e.stopPropagation()
+      if (e.isComposing) return
       if (e.key === 'Enter') {
         e.preventDefault()
         finish(true)
@@ -1451,6 +1456,7 @@ export class MermaidCanvasView {
     }
     div.addEventListener('keydown', (e) => {
       e.stopPropagation()
+      if (e.isComposing) return
       if (e.key === 'Enter') {
         e.preventDefault()
         commit()

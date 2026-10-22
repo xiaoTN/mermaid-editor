@@ -43,7 +43,8 @@ export class FlowchartGestures {
 
   constructor(private editor: MermaidWysiwygEditor, private host: HTMLElement,
     private readonly: () => boolean, private refresh: () => void, private notify: (notices: EditorNotice[]) => void,
-    private canMoveNode: () => boolean = () => true, private onNodeMove: () => void = () => {}) {
+    private canMoveNode: () => boolean = () => true, private onNodeMove: () => void = () => {},
+    private onNodeCreated: (entityId: string) => void = () => {}) {
     this.ports.className = 'mw-ports'
     this.ends.className = 'mw-endpoints'
     this.hint.className = 'mw-connect-hint'
@@ -290,8 +291,12 @@ export class FlowchartGestures {
       const edge = draft.dispatch({ type: 'connect', source, target: node, insideGroup: true })?.created
       const edit = diffText(this.editor.code, draft.code)
       if (edit) this.editor.applyEdits([edit], 'canvas')
-      if (edge) this.editor.setSelection(edge, 'canvas')
-      if (edit && edge) this.directionNotice(source, node)
+      if (edit) {
+        const entityId = `node:${node}`
+        this.editor.setSelection([entityId], 'canvas')
+        this.onNodeCreated(entityId)
+        if (edge) this.directionNotice(source, node)
+      }
     }
     this.host.append(menu)
     const close = (e: Event) => { if (!menu.contains(e.target as Node)) { menu.remove(); document.removeEventListener('pointerdown', close) } }
