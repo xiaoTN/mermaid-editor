@@ -18,14 +18,39 @@ export function scanLines(code: string): LineInfo[] {
   return lines
 }
 
-/** Classify lines generically (frontmatter, comments, directives, header). Mutates `kind` in place. */
+/** 只识别完整包裹单张图的 Mermaid 代码块，不从多段 Markdown 中擅自选图。 */
+function mermaidFenceLines(lines: LineInfo[]): { first: number; last: number } | null {
+  const first = lines.findIndex(line => line.text.trim() !== '')
+  if (first < 0) return null
+  const opening = /^ {0,3}(`{3,}|~{3,})[\t ]*mermaid[\t ]*\r?$/i.exec(lines[first].text.replace(/^\uFEFF/, ''))
+  if (!opening) return null
+  let last = lines.length - 1
+  while (last > first && !lines[last].text.trim()) last--
+  const closing = new RegExp(`^ {0,3}${opening[1][0]}{${opening[1].length},}[\\t ]*\\r?$`)
+  if (last <= first || !closing.test(lines[last].text)) return null
+  if (lines.slice(first + 1, last).some(line => closing.test(line.text))) return null
+  return { first, last }
+}
+
+/** 渲染时移除 Markdown 包装，编辑器仍保存原始字符串及全部源码偏移。 */
+export function mermaidSource(code: string): string {
+  const lines = scanLines(code), fence = mermaidFenceLines(lines)
+  return fence ? code.slice(lines[fence.first + 1].start, lines[fence.last].start) : code
+}
+
+/** 标记前置信息、注释、指令和图表头，保留每行在原文中的位置。 */
 export function classifyLines(lines: LineInfo[]): { headerIndex: number } {
+  const fence = mermaidFenceLines(lines)
   let headerIndex = -1
   let inFrontmatter = false
   let frontmatterDone = false
   let sawContent = false
 
   for (const line of lines) {
+    if (fence && (line.index <= fence.first || line.index >= fence.last)) {
+      line.kind = 'comment'
+      continue
+    }
     const t = line.text.trim()
     if (!sawContent && !frontmatterDone && t === '---') {
       if (!inFrontmatter) {

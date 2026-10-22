@@ -1,7 +1,7 @@
 export * from './types'
 export { bindTextPane, type TextPaneAdapter, type TextPaneBinding } from './textpane'
 export { DIAGRAM_TYPES, detectDiagramType } from './registry'
-export { scanLines, classifyLines, applyEdits, diffText, mapOffset } from './text'
+export { scanLines, classifyLines, applyEdits, diffText, mapOffset, mermaidSource } from './text'
 export {
   parseFlowStatement,
   splitStatements,

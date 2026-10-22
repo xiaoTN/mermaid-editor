@@ -4,6 +4,7 @@ import { t, onLocaleChange } from './i18n'
 import { FlowchartGestures, flowchartEndpoint, GESTURE_CSS } from './gestures'
 import {
   MermaidWysiwygEditor,
+  mermaidSource,
   MESSAGE_OPS,
   PARTICIPANT_TYPES,
   type Diagnostic,
@@ -667,13 +668,10 @@ export class MermaidCanvasView {
     const seq = ++this.renderSeq
     const id = `mw-render-${++renderIdCounter}`
     try {
-      const { svg } = await this.mermaid.render(id, code)
-      if (seq !== this.renderSeq) return // stale
-      // an in-place edit may have kept typing since the live commit this render
-      // came from — snapshot the label's real text and caret before the swap
-      // destroys them, then reinject below so no keystroke is lost
-      // a session may have OPENED while the render was in flight — re-read it
-      // through the accessor so the early-return narrowing above doesn't apply
+      const { svg } = await this.mermaid.render(id, mermaidSource(code))
+      if (seq !== this.renderSeq) return // 忽略过期的渲染结果
+      // 渲染期间用户可能继续输入，替换 DOM 前保存文字和光标，随后恢复，避免丢字。
+      // 编辑会话也可能在渲染期间刚开启，通过访问方法重新读取，避免沿用之前的类型收窄。
       let liveEdit: { value: string; caret: number } | null = null
       const midFlightSession = this.activeInPlaceSession()
       const editingLabel = midFlightSession?.label
@@ -2239,10 +2237,10 @@ export class MermaidCanvasView {
     return this.clientToSvg(rect.left + rect.width / 2, rect.top + rect.height / 2)
   }
 
-  /** Validate code through mermaid.parse and publish diagnostics (does not render). */
+  /** 通过 mermaid.parse 校验源码并发布诊断，不触发渲染。 */
   async validate(): Promise<boolean> {
     try {
-      await this.mermaid.parse(this.editor.code)
+      await this.mermaid.parse(mermaidSource(this.editor.code))
       return true
     } catch (err) {
       const message = err instanceof Error ? err.message.split('\n')[0] : String(err)

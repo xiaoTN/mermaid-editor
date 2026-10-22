@@ -15,6 +15,21 @@ function mount(code = CODE) {
 }
 
 describe('MermaidCodeMirror against real CodeMirror 6', () => {
+  it('粘贴完整 Mermaid 代码块后画布可编辑，源码高亮和撤销保留包装', () => {
+    const { editor, host, cm } = mount()
+    const wrapped = '```mermaid\n' + CODE + '```'
+    cm.view.dispatch({ changes: { from: 0, to: cm.view.state.doc.length, insert: wrapped } })
+    expect(editor.result.typeInfo?.id).toBe('flowchart')
+    const offset = wrapped.indexOf('A[Start]') + 1
+    cm.view.dispatch({ selection: { anchor: offset } })
+    expect(editor.selection).toEqual(['node:A'])
+    expect([...host.querySelectorAll('.mw-cm-entity')].map(mark => mark.textContent).join('')).toContain('A[Start]')
+    editor.dispatch({ type: 'renameNode', id: 'A', label: '开始' })
+    expect(cm.view.state.doc.toString()).toBe(wrapped.replace('Start', '开始'))
+    editor.undo(); expect(cm.view.state.doc.toString()).toBe(wrapped)
+    editor.undo(); expect(cm.view.state.doc.toString()).toBe(CODE)
+    cm.destroy(); host.remove()
+  })
   it('mirrors engine ops into the view', () => {
     const { editor, cm } = mount()
     editor.dispatch({ type: 'renameNode', id: 'A', label: 'Begin' })
