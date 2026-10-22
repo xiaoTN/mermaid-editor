@@ -1467,13 +1467,23 @@ export class MermaidCanvasView {
 
   private onKeyDown(e: KeyboardEvent) {
     if (this.readOnly) return
-    if (this.inlineInput) return
+    if (this.inlineInput || this.inPlaceSession || e.isComposing ||
+      (e.target as Element)?.closest('input, textarea, select, [contenteditable="true"]')) return
     const mod = e.metaKey || e.ctrlKey
     if (mod && e.key.toLowerCase() === 'z') {
       e.preventDefault()
       if (e.shiftKey) this.editor.redo()
       else this.editor.undo()
       return
+    }
+    if (mod && e.key.toLowerCase() === 'a' && this.editor.result.flowchart) {
+      e.preventDefault()
+      const nodes = [...this.svg?.querySelectorAll('[data-mw-entity^="node:"]') ?? []]
+      this.editor.setSelection([...new Set(nodes.map(node => node.getAttribute('data-mw-entity')!))], 'canvas')
+      return
+    }
+    if (e.key === 'F2' && this.editor.selection.length === 1) {
+      e.preventDefault(); this.editEntityLabel(this.editor.selection[0]); return
     }
     if (this.readOnly) return
     if ((e.key === 'Delete' || e.key === 'Backspace') && this.editor.selection.length) {
@@ -1524,7 +1534,12 @@ export class MermaidCanvasView {
     this.popover.hide()
     if (this.readOnly || this.inlineInput || this.inPlaceSession) return
     const sel = this.editor.selection
-    if (sel.length !== 1 || !this.svg) return
+    if (!sel.length || !this.svg) return
+    if (sel.length > 1) {
+      const anchor = this.topmostEntityElement(sel[0])
+      if (anchor) this.popover.show(this.hostRect(anchor), this.actionsForSelection(sel))
+      return
+    }
     const id = sel[0]
     // several elements can belong to one entity (e.g. participant top+bottom
     // boxes) — anchor at the element the user actually clicked when we know
@@ -1560,6 +1575,28 @@ export class MermaidCanvasView {
         { swatch: 'none', title: t('ui.defaultColor', { name: title }), onClick: () => onPick(null) },
       ],
     }
+  }
+
+  /** 多选时只提供适用于整个选区的操作，避免只改到其中一个元素。 */
+  private actionsForSelection(ids: string[]): PopoverAction[] {
+    const actions: PopoverAction[] = [{ glyph: t('selection.count', { n: ids.length }),
+      title: t('selection.focus'), onClick: () => this.focusEntities(ids) }]
+    if (this.editor.result.flowchart && ids.every(id => id.startsWith('node:'))) {
+      const shapes: ShapeId[] = ['rect', 'round', 'stadium', 'diamond', 'hexagon', 'circle', 'cylinder', 'subroutine']
+      actions.push({ icon: ICONS.shapes, title: t('ui.nodeShape'), panel: { title: t('ui.nodeShape'),
+        items: shapes.map(shape => ({ glyph: t(`shape.${shape}`), title: t(`shape.${shape}`),
+          onClick: () => this.editor.dispatchBatch(ids.map(id => ({ type: 'setNodeShape', id: id.slice(5), shape }))) })) } },
+      { icon: ICONS.palette, title: t('ui.colors'), panel: { title: t('ui.colors'),
+        sections: (['fill', 'stroke', 'color'] as const).map(prop =>
+          this.colorSection(t(prop === 'fill' ? 'ui.fill' : prop === 'stroke' ? 'ui.border' : 'ui.text'), value =>
+            this.editor.dispatchBatch(ids.map(id => ({ type: 'setNodeColor', id: id.slice(5), prop, value }))))) } },
+      { glyph: t('tb.addGroup'), title: t('tb.addGroup'), onClick: () => this.editor.dispatch({
+        type: 'addSubgraph', title: t('ui.newGroup'), nodeIds: ids.map(id => id.slice(5)),
+      }) })
+    }
+    actions.push({ icon: ICONS.trash, title: t('selection.delete'), danger: true,
+      onClick: () => this.editor.deleteEntities(ids) })
+    return actions
   }
 
   private actionsFor(id: string): PopoverAction[] {

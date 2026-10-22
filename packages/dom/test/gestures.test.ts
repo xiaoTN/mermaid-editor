@@ -32,6 +32,25 @@ afterEach(() => { view.destroy(); host.remove(); vi.unstubAllGlobals(); setLocal
 
 describe.each(['zh-CN', 'en'] as const)('%s 画布手势', locale => {
   beforeEach(() => setLocale(locale))
+  it('多选浮层批量改形状、颜色、删除，一次撤销恢复全部节点', () => {
+    const clickTitle = (title: string) => [...host.querySelectorAll<HTMLButtonElement>('button')].find(button => button.title === title)!.click()
+    editor.setSelection(['node:A', 'node:C'])
+    expect(host.querySelector('.mw-popover')?.textContent).toContain(t('selection.count', { n: 2 }))
+    clickTitle(t('ui.nodeShape')); clickTitle(t('shape.diamond'))
+    expect(editor.result.flowchart!.nodeById.get('A')!.shape).toBe('diamond')
+    expect(editor.result.flowchart!.nodeById.get('C')!.shape).toBe('diamond')
+    expect(editor.result.flowchart!.nodeById.get('B')!.shape).toBe('rect')
+    editor.undo(); expect(editor.code).toBe(CODE)
+    clickTitle(t('ui.colors'))
+    clickTitle(t('ui.colorValue', { name: t('ui.fill'), value: '#ef4444' }))
+    expect(editor.code).toContain('style A fill:#ef4444')
+    expect(editor.code).toContain('style C fill:#ef4444')
+    editor.undo(); expect(editor.code).toBe(CODE)
+    clickTitle(t('selection.delete'))
+    expect(editor.result.flowchart!.nodeById.has('A')).toBe(false)
+    expect(editor.result.flowchart!.nodeById.has('C')).toBe(false)
+    editor.undo(); expect(editor.code).toBe(CODE); expect(editor.canUndo).toBe(false)
+  })
   it('端点松在空白处取消，字节和历史不变，保留 Mermaid id', () => {
     pointer(find('edge:A->B#0'), 'click')
     expect(host.querySelector('#L_A_B_0')).not.toBeNull()

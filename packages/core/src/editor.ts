@@ -318,9 +318,34 @@ export class MermaidWysiwygEditor {
     return compiled
   }
 
-  /** Delete a mixed selection of entities, sequentially and safely. */
+  /** 在临时编辑器完成一组修改，只向界面提交一次变化和一条撤销记录。 */
+  private editTogether(action: (draft: MermaidWysiwygEditor) => void, origin: Origin) {
+    const draft = new MermaidWysiwygEditor({ code: this._code })
+    draft.setSelection(this._selection)
+    const warnings: import('./flowchart/ops').EditorNotice[] = []
+    draft.on('warning', notices => warnings.push(...notices))
+    action(draft)
+    const diff = diffText(this._code, draft.code)
+    if (diff) {
+      this.applyEdits([diff], origin)
+      this.setSelection(draft.selection, origin)
+      this.undoStack[this.undoStack.length - 1].selectionAfter = [...this._selection]
+    }
+    if (warnings.length) this.emit('warning', warnings)
+  }
+
+  /** 批量应用节点样式等语义修改，一次撤销恢复整个选区。 */
+  dispatchBatch(ops: EditorOp[], origin: Origin = 'canvas'): void {
+    this.editTogether(draft => { for (const op of ops) draft.dispatch(op, origin) }, origin)
+  }
+
+  /** 删除整个选区，并将相关连线变化合为一次可撤销操作。 */
   deleteEntities(entityIds: string[], origin: Origin = 'canvas'): void {
-    // delete connections/events first (deleting an endpoint may already remove them)
+    this.editTogether(draft => draft.deleteEntitiesIndividually(entityIds, origin), origin)
+  }
+
+  private deleteEntitiesIndividually(entityIds: string[], origin: Origin): void {
+    // 先删除连线；同类元素从源码末尾向前处理，避免重复连线编号漂移。
     const order = (id: string) =>
       id.startsWith('edge:') ||
       id.startsWith('event:') ||
@@ -329,7 +354,8 @@ export class MermaidWysiwygEditor {
       id.startsWith('erel:')
         ? 0
         : 1
-    for (const id of [...entityIds].sort((a, b) => order(a) - order(b))) {
+    const position = (id: string) => Math.max(-1, ...this.entityRanges(id).map(span => span.start))
+    for (const id of [...new Set(entityIds)].sort((a, b) => order(a) - order(b) || position(b) - position(a))) {
       if (!this.entityExists(id)) continue
       if (id.startsWith('edge:')) this.dispatch({ type: 'deleteEdge', edgeId: id }, origin)
       else if (id.startsWith('node:')) this.dispatch({ type: 'deleteNode', id: id.slice(5) }, origin)
