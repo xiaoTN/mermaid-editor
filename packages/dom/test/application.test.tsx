@@ -48,7 +48,7 @@ describe('应用线框和文件交互', () => {
   it('工具栏顺序、标题、单一同步状态、底栏提示和语言高亮符合产品布局', async () => {
     await mount()
     const labels = [...host.querySelectorAll('.toolbar button')].map(b => b.getAttribute('aria-label'))
-    expect(labels.slice(0, 9)).toEqual(['新建', '打开', '保存', '撤销', '重做', '框选', '+ 节点', '+ 分组', '复制代码'])
+    expect(labels.slice(0, 10)).toEqual(['新建', '打开', '保存', '撤销', '重做', '框选', '+ 节点', '+ 分组', '切换图表方向', '复制代码'])
     expect(host.querySelector('.titlebar')?.textContent).toBe('Mermaid 编辑器 — 图表.mmd')
     expect(host.querySelectorAll('.sync-status')).toHaveLength(1)
     expect(host.querySelector('.hintbar .mw-first-hint')).not.toBeNull()
@@ -57,6 +57,28 @@ describe('应用线框和文件交互', () => {
     expect(host.querySelector('.language-switch button.active')?.textContent).toBe('EN')
     expect(host.querySelector('.language-switch')?.getAttribute('aria-label')).toBe('Switch interface language')
     expect(host.querySelector('select')).toBeNull()
+  })
+  it.each(['zh-CN', 'en'] as const)('%s 一个方向按钮循环四向，保留节点连线和分组设置，撤销同步按钮', async locale => {
+    setLocale(locale)
+    const code = '%% 保留配置\r\nflowchart TB\r\n\tsubgraph G[分组]\r\n\t direction LR\r\n\t A[甲] --> B[乙]  \r\n\tend\r\n'
+    let view!: MermaidCanvasView
+    const render = MermaidCanvasView.prototype.render
+    vi.spyOn(MermaidCanvasView.prototype, 'render').mockImplementation(async function () { view = this; await render.call(this) })
+    const fit = vi.spyOn(MermaidCanvasView.prototype, 'fitView')
+    await mount({ open: async () => ({ name: '方向.mmd', code }), save: vi.fn() }); await open()
+    expect(button('direction.change').textContent).toBe(`${t('direction.label')} ↓`)
+    fit.mockClear()
+    for (const [direction, arrow] of [['LR', '→'], ['BT', '↑'], ['RL', '←'], ['TD', '↓']]) {
+      await click('direction.change')
+      expect(view.editor.code).toBe(code.replace('flowchart TB', `flowchart ${direction}`))
+      expect(button('direction.change').textContent).toBe(`${t('direction.label')} ${arrow}`)
+    }
+    expect(fit).toHaveBeenCalledTimes(4)
+    for (let i = 0; i < 4; i++) await click('tb.undo')
+    expect(view.editor.code).toBe(code)
+    expect(button('direction.change').textContent).toBe(`${t('direction.label')} ↓`)
+    await click('tb.redo')
+    expect(button('direction.change').textContent).toBe(`${t('direction.label')} →`)
   })
   it('多选后按下工具栏分组按钮仍保留选区，创建分组后一次撤销恢复', async () => {
     vi.spyOn(mermaid, 'render').mockImplementation(async id => ({ svg:
@@ -215,6 +237,7 @@ describe('应用线框和文件交互', () => {
     expect(host.querySelector('.mw-readonly-hint')?.textContent).toBe(t('canvas.previewOnly'))
     expect(button('tb.addNode').disabled).toBe(true)
     expect(button('tb.addGroup').disabled).toBe(true)
+    expect(button('direction.change').disabled).toBe(true)
     expect(host.querySelector('.mw-popover')).toBeNull()
     expect(document.title.endsWith(' *')).toBe(false)
   })

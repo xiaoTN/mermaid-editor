@@ -13,6 +13,10 @@ import { supportedFile, windowTitle } from './documentFile'
 import { mayLeaveDocument } from './lifecycle'
 
 const desktop = detectDesktop()
+const directions = [
+  { code: 'TD', arrow: '↓' }, { code: 'LR', arrow: '→' },
+  { code: 'BT', arrow: '↑' }, { code: 'RL', arrow: '←' },
+] as const
 
 const canvasConfig = {
   securityLevel: 'loose', theme: 'base',
@@ -60,6 +64,9 @@ export default function App({ fileAccess = desktop ?? browserFiles }: { fileAcce
   const observedHash = useRef('')
   const checking = useRef<Promise<void> | null>(null)
   const editable = editor.result.typeInfo?.id === 'flowchart'
+  const directionIndex = Math.max(0, directions.findIndex(item => item.code === editor.result.flowchart?.direction))
+  const direction = directions[directionIndex]
+  const nextDirection = directions[(directionIndex + 1) % directions.length]
   const dirty = code !== baseline
   const changed = useMemo(() => diskChangedLines(baseline, code), [baseline, code])
   const displayName = untitled ? t('app.untitled') : filename
@@ -277,6 +284,13 @@ export default function App({ fileAccess = desktop ?? browserFiles }: { fileAcce
           type: 'addSubgraph', title: t('ui.newGroup'),
           nodeIds: editor.selection.filter(id => id.startsWith('node:')).map(id => id.slice(5)),
         })}>{t('tb.addGroup')}</Button>
+        <Button disabled={!editable || parseError} aria-label={t('direction.change')}
+          title={t('direction.hint', { current: t(`direction.${direction.code}`), next: t(`direction.${nextDirection.code}`) })}
+          onClick={() => {
+            // 先解除手动视图锁定，重绘后按新方向适配画布。
+            view.current?.fitView()
+            editor.dispatch({ type: 'setDirection', direction: nextDirection.code })
+          }}>{t('direction.label')} {direction.arrow}</Button>
       </div>
       <div className="toolbar-right">
         <span className={`sync-status${parseError ? ' error' : ''}`} role="status" aria-live="polite">

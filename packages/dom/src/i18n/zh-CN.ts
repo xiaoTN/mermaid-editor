@@ -3,6 +3,13 @@ import type en from './en'
 export default {
   'tb.open': "打开",
   'tb.new': "新建",
+  'direction.label': "方向",
+  'direction.change': "切换图表方向",
+  'direction.hint': "当前：{current}；点击切换为{next}（整张图，可撤销）",
+  'direction.TD': "从上到下",
+  'direction.LR': "从左到右",
+  'direction.BT': "从下到上",
+  'direction.RL': "从右到左",
   'selection.count': "已选 {n} 项",
   'selection.box': "框选",
   'selection.boxHint': "拖出矩形选择节点；Shift 可追加，Esc 退出框选",

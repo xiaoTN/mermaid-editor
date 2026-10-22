@@ -1,6 +1,13 @@
 export default {
   'tb.open': "Open",
   'tb.new': "New",
+  'direction.label': "Direction",
+  'direction.change': "Cycle diagram direction",
+  'direction.hint': "Current: {current}; click for {next} (whole diagram, undoable)",
+  'direction.TD': "top to bottom",
+  'direction.LR': "left to right",
+  'direction.BT': "bottom to top",
+  'direction.RL': "right to left",
   'selection.count': "{n} selected",
   'selection.box': "Box select",
   'selection.boxHint': "Drag to select nodes; Shift adds to selection, Esc exits",
