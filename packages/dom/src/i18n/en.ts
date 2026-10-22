@@ -1,5 +1,9 @@
 export default {
   'tb.open': "Open",
+  'tb.new': "New",
+  'tb.newHint': "Clear the canvas and start a new diagram (undoable)",
+  'toast.newDocument': "New blank diagram created. Undo to restore the previous content.",
+  'err.newDocument': "Couldn't create a new diagram: {reason}",
   'tb.save': "Save",
   'tb.saveAs': "Save as",
   'app.untitled': "untitled.mmd",

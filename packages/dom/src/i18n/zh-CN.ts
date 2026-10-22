@@ -2,6 +2,10 @@ import type en from './en'
 
 export default {
   'tb.open': "打开",
+  'tb.new': "新建",
+  'tb.newHint': "清空画布并新建（可撤销）",
+  'toast.newDocument': "已新建空白图表，可点击撤销恢复原内容",
+  'err.newDocument': "新建失败：{reason}",
   'tb.save': "保存",
   'tb.saveAs': "另存为",
   'app.untitled': "未命名.mmd",

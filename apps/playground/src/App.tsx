@@ -158,6 +158,30 @@ export default function App({ fileAccess = desktop ?? browserFiles }: { fileAcce
       setFilename(opened.name); setToast(null)
     } catch (error) { setToast({ key: 'err.open', reason: error instanceof Error ? error.message : String(error) }) }
   }
+  const newDocument = async () => {
+    const version = ++fileVersion.current
+    try {
+      // 等待正在进行的文件操作，避免旧文件的保存结果覆盖新文档状态。
+      await saving.current
+      await checking.current
+      await initializing.current
+      if (version !== fileVersion.current) return
+      const next = await drafts.open({ code: '', name: t('app.untitled'), untitled: true,
+        path: `untitled:${Date.now()}:${version}` }, false)
+      if (version !== fileVersion.current) return
+      // 旧文档保留自己的草稿；新建使用独立草稿身份，且清空操作可撤销。
+      session.current?.edit(editor.code)
+      session.current = next; setReady(true)
+      observedHash.current = ''
+      updateBaseline(''); setOutside(null); setPrompt(null)
+      setUntitled(true); setFilename(next.name)
+      editor.setCode('flowchart TD\n', 'api')
+      editor.clearSelection()
+      next.edit(editor.code)
+      view.current?.fitView()
+      setToast({ key: 'toast.newDocument' })
+    } catch (error) { setToast({ key: 'err.newDocument', reason: error instanceof Error ? error.message : String(error) }) }
+  }
   const performSave = async (saveAs: boolean): Promise<boolean> => {
     await checking.current
     const savedCode = editor.code
@@ -165,7 +189,7 @@ export default function App({ fileAccess = desktop ?? browserFiles }: { fileAcce
       const current = session.current ?? await initializing.current
       current?.edit(savedCode)
       const snapshot = { ...current?.snapshot, code: savedCode, name: displayName }
-      if (!native && snapshot.path === snapshot.name) delete snapshot.path
+      if (snapshot.untitled || (!native && snapshot.path === snapshot.name)) delete snapshot.path
       const saved = await (saveAs && fileAccess.saveAs ? fileAccess.saveAs(snapshot) : fileAccess.save(snapshot))
       if (saved === null) return false
       if (saved?.reloaded) { await reload(saved); return false }
@@ -234,6 +258,7 @@ export default function App({ fileAccess = desktop ?? browserFiles }: { fileAcce
       <input ref={fileInput} type="file" hidden accept=".mmd,.mermaid,.md,.txt" aria-label={t('app.fileInput')}
         onChange={e => { const file = e.target.files?.[0]; e.target.value = ''; if (file) void open(file) }} />
       <div className="tool-group">
+        <Button title={t('tb.newHint')} onClick={() => void newDocument()}>{t('tb.new')}</Button>
         <Button onClick={() => native ? void open() : fileInput.current?.click()}>{t('tb.open')}</Button>
         <Button onClick={() => void save()}>{t('tb.save')}</Button>
         {native && <Button onClick={() => void save(true)}>{t('tb.saveAs')}</Button>}

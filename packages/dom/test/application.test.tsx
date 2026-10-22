@@ -48,7 +48,7 @@ describe('应用线框和文件交互', () => {
   it('工具栏顺序、标题、单一同步状态、底栏提示和语言高亮符合产品布局', async () => {
     await mount()
     const labels = [...host.querySelectorAll('.toolbar button')].map(b => b.getAttribute('aria-label'))
-    expect(labels.slice(0, 7)).toEqual(['打开', '保存', '撤销', '重做', '+ 节点', '+ 分组', '复制代码'])
+    expect(labels.slice(0, 8)).toEqual(['新建', '打开', '保存', '撤销', '重做', '+ 节点', '+ 分组', '复制代码'])
     expect(host.querySelector('.titlebar')?.textContent).toBe('Mermaid 编辑器 — 图表.mmd')
     expect(host.querySelectorAll('.sync-status')).toHaveLength(1)
     expect(host.querySelector('.hintbar .mw-first-hint')).not.toBeNull()
@@ -95,6 +95,56 @@ describe('应用线框和文件交互', () => {
       host.querySelector('.titlebar')!.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
     })
     expect(view.editor.selection).toEqual([])
+  })
+  it.each(['zh-CN', 'en'] as const)('%s 一键新建清空所有内容，可撤销、重做并继续添加节点', async locale => {
+    setLocale(locale)
+    let view!: MermaidCanvasView
+    const render = MermaidCanvasView.prototype.render
+    vi.spyOn(MermaidCanvasView.prototype, 'render').mockImplementation(async function () {
+      view = this
+      await render.call(this)
+    })
+    await mount()
+    await click('tb.addGroup')
+    const original = view.editor.code
+    const previousDraft = new DraftStore().resume()!
+    await click('tb.new')
+    expect(view.editor.code).toBe('flowchart TD\n')
+    expect(view.editor.result.flowchart?.nodes).toHaveLength(0)
+    expect(view.editor.selection).toEqual([])
+    expect(button('tb.addNode').disabled).toBe(false)
+    expect(host.querySelector('.titlebar')?.textContent).toContain(t('app.untitled'))
+    expect(host.querySelector('.app-toast')?.textContent).toBe(t('toast.newDocument'))
+    expect((await new DraftStore().open({ ...previousDraft.snapshot, code: previousDraft.baseCode })).restore()).toBe(original)
+    await click('tb.undo')
+    expect(view.editor.code).toBe(original)
+    await click('tb.redo')
+    expect(view.editor.code).toBe('flowchart TD\n')
+    await click('tb.addNode')
+    expect(view.editor.result.flowchart?.nodes).toHaveLength(1)
+    expect(view.editor.result.flowchart?.edges).toHaveLength(0)
+    const newCode = view.editor.code
+    await act(async () => root.unmount()); root = createRoot(host); await mount()
+    await click('draft.restore')
+    expect(view.editor.code).toBe(newCode)
+    expect(host.querySelector('.titlebar')?.textContent).toContain(t('app.untitled'))
+  })
+  it('从 Markdown 新建时移除原文件路径和包装内容，保存与撤销都不会覆盖原文件', async () => {
+    const opened = { name: '项目.md', path: 'project/项目.md', code: 'flowchart LR\n A --> B',
+      source: '# 项目说明\n```mermaid\nflowchart LR\n A --> B\n```', diskHash: 'old-hash' }
+    const fileAccess: FileAccess = { open: async () => opened, save: vi.fn(async () => {}) }
+    await mount(fileAccess); await open()
+    await click('tb.new')
+    await click('tb.save')
+    expect(fileAccess.save).toHaveBeenLastCalledWith({ code: 'flowchart TD\n', name: t('app.untitled'), untitled: true })
+    await click('tb.undo')
+    await click('tb.save')
+    const saved = vi.mocked(fileAccess.save).mock.lastCall![0]
+    expect(saved.code).toBe(opened.code)
+    expect(saved.name).toBe(t('app.untitled'))
+    expect(saved.path).not.toBe(opened.path)
+    expect(saved.source).toBeUndefined()
+    expect(saved.diskHash).toBeUndefined()
   })
   it('恢复草稿原始字节，画布修改自动保存，撤销可恢复，重载仍有草稿', async () => {
     const draft = { code: 'flowchart TD\r\n\tA[甲] --> B[乙]  %% 保留\r\n', name: '原始.mmd' }
