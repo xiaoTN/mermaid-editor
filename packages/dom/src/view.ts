@@ -1,4 +1,5 @@
 import { mountNotices, NOTICE_CSS } from './notices'
+import { mountBoxSelection, BOX_SELECTION_CSS } from './boxSelection'
 import { t, onLocaleChange } from './i18n'
 import { FlowchartGestures, flowchartEndpoint, GESTURE_CSS } from './gestures'
 import {
@@ -42,7 +43,7 @@ export interface MermaidLike {
   parse(code: string, options?: Record<string, unknown>): Promise<unknown>
 }
 
-export type Tool = 'select' | 'connect'
+export type Tool = 'select' | 'connect' | 'box-select'
 
 export interface ViewHooks {
   /** return true to suppress the built-in inline label editor */
@@ -216,6 +217,7 @@ export class MermaidCanvasView {
   /** which of an entity's twin elements the user clicked (popover anchor) */
   private popoverAnchorPick: { entityId: string; index: number } | null = null
   private tool: Tool = 'select'
+  private boxSelection?: ReturnType<typeof mountBoxSelection>
   private requestedReadOnly: boolean
   private get readOnly(): boolean { return this.requestedReadOnly || this.editor.result.typeInfo?.id !== 'flowchart' }
   private debounceMs: number
@@ -281,7 +283,7 @@ export class MermaidCanvasView {
     if (!styleInjected) {
       const style = document.createElement('style')
       style.setAttribute('data-mw', '')
-      style.textContent = BASE_CSS + POPOVER_CSS + GESTURE_CSS + NOTICE_CSS
+      style.textContent = BASE_CSS + POPOVER_CSS + GESTURE_CSS + NOTICE_CSS + BOX_SELECTION_CSS
       document.head.appendChild(style)
       styleInjected = true
     }
@@ -300,7 +302,7 @@ export class MermaidCanvasView {
     this.container.append(this.svgHost, this.overlayHost, this.errorBadge)
     this.popover = new Popover(this.overlayHost)
     this.notices = mountNotices(this.container, this.editor, () => this.readOnly, options.hintContainer)
-    this.gestures = new FlowchartGestures(this.editor, this.container, () => this.readOnly, () => this.updatePopover(), notices => this.notices.show(notices),
+    this.gestures = new FlowchartGestures(this.editor, this.container, () => this.readOnly || this.tool === 'box-select', () => this.updatePopover(), notices => this.notices.show(notices),
       () => this.tool === 'select' && !this.inlineInput && !this.inPlaceSession, () => this.popover.hide())
 
     this.mermaid.initialize(this.mermaidConfig)
@@ -345,6 +347,10 @@ export class MermaidCanvasView {
     document.addEventListener('pointerdown', docPointerDown, true)
     this.disposers.push(() => document.removeEventListener('pointerdown', docPointerDown, true))
 
+    this.boxSelection = mountBoxSelection(this.editor, this.container, this.svgHost,
+      () => !this.readOnly && !!this.editor.result.flowchart && this.tool !== 'connect' && !this.inlineInput && !this.inPlaceSession,
+      () => this.tool === 'box-select', () => this.popover.hide(), () => this.updatePopover())
+    this.disposers.push(() => this.boxSelection?.destroy())
     if (this.panZoomEnabled) this.setupPanZoom()
 
     void this.render()
@@ -369,13 +375,17 @@ export class MermaidCanvasView {
   }
 
   setTool(tool: Tool) {
+    this.boxSelection?.cancel()
     this.tool = tool
     this.container.classList.toggle('mw-tool-connect', tool === 'connect')
+    this.container.classList.toggle('mw-tool-box-select', tool === 'box-select')
     this.cancelConnect()
+    this.gestures.update()
     this.emit('toolChange', tool)
   }
 
   setReadOnly(readOnly: boolean) {
+    this.boxSelection?.cancel()
     this.requestedReadOnly = readOnly
     this.notices.update()
     this.container.classList.toggle('mw-readonly', this.readOnly)
@@ -449,7 +459,7 @@ export class MermaidCanvasView {
       this.suppressNextClick = false
       if (this.editor.result.typeInfo?.id !== 'flowchart') return
       if (e.button !== 0) return
-      if (this.tool === 'connect' || e.altKey) return
+      if (this.tool !== 'select' || e.altKey || e.shiftKey) return
       if (this.inlineInput || this.inPlaceSession) return
       const target = e.target as Element | null
       if (!target || !this.svgHost.contains(target)) return
@@ -1492,6 +1502,7 @@ export class MermaidCanvasView {
       return
     }
     if (e.key === 'Escape') {
+      if (this.tool === 'box-select') { this.setTool('select'); return }
       this.cancelConnect()
       this.editor.clearSelection('canvas')
       return

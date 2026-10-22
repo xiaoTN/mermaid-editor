@@ -44,6 +44,7 @@ export default function App({ fileAccess = desktop ?? browserFiles }: { fileAcce
   const [parseError, setParseError] = useState(false)
   const [sourceCollapsed, setSourceCollapsed] = useState(false)
   const [searchOpen, setSearchOpen] = useState(false)
+  const [boxSelect, setBoxSelect] = useState(false)
   const sourcePanelId = useId()
   const [toast, setToast] = useState<{ key: string; reason?: string } | null>(null)
   const session = useRef<DraftSession | null>(resumed)
@@ -90,7 +91,8 @@ export default function App({ fileAccess = desktop ?? browserFiles }: { fileAcce
       readOnly: editor.result.typeInfo?.id !== 'flowchart', hintContainer: hint.current ?? undefined })
     view.current = next
     const off = next.on('render', () => setParseError(!!next.renderError))
-    return () => { off(); next.destroy(); view.current = null }
+    const offTool = next.on('toolChange', tool => setBoxSelect(tool === 'box-select'))
+    return () => { off(); offTool(); next.destroy(); view.current = null }
   }, [editor])
   useEffect(() => { view.current?.setReadOnly(!editable) }, [editable])
   useEffect(() => {
@@ -273,6 +275,8 @@ export default function App({ fileAccess = desktop ?? browserFiles }: { fileAcce
         <Button disabled={!editor.canRedo} onClick={() => editor.redo()}>{t('tb.redo')}</Button>
       </div>
       <div ref={additions} className="tool-group additions">
+        <Button disabled={!editable} aria-pressed={boxSelect} title={t('selection.boxHint')}
+          onClick={() => view.current?.setTool(boxSelect ? 'select' : 'box-select')}>{t('selection.box')}</Button>
         <Button disabled={!editable} onClick={() => editor.dispatch({ type: 'addNode', label: t('drag.newNode') })}>{t('tb.addNode')}</Button>
         <Button disabled={!editable} title={t('tb.groupHint')} onClick={() => editor.dispatch({
           type: 'addSubgraph', title: t('ui.newGroup'),
