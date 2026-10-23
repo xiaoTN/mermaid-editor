@@ -11,6 +11,7 @@ import { DraftNotice } from './DraftNotice'
 import { DesktopFiles, detectDesktop } from './desktop'
 import { supportedFile, windowTitle } from './documentFile'
 import { mayLeaveDocument } from './lifecycle'
+import { Icon, type IconName } from './Icon'
 
 const desktop = detectDesktop()
 const directions = [
@@ -18,14 +19,20 @@ const directions = [
   { code: 'BT', arrow: '↑' }, { code: 'RL', arrow: '←' },
 ] as const
 
-const canvasConfig = {
-  securityLevel: 'loose', theme: 'base',
-  themeVariables: {
-    fontFamily: 'system-ui, sans-serif', fontSize: '14px',
-    primaryColor: '#eef2ff', primaryTextColor: '#1f2937', primaryBorderColor: '#6b7280',
-    lineColor: '#374151', secondaryColor: '#fffbeb', tertiaryColor: '#ffffff',
-    clusterBkg: '#ffffff', clusterBorder: '#9ca3af', edgeLabelBackground: '#ffffff',
-  },
+function canvasTheme() {
+  const style = getComputedStyle(document.documentElement)
+  const token = (name: string) => style.getPropertyValue(`--${name}`).trim()
+  return {
+    securityLevel: 'loose', theme: 'base',
+    themeVariables: {
+      fontFamily: token('font-body'), fontSize: '14px',
+      primaryColor: token('color-selected'), primaryTextColor: token('color-ink'),
+      primaryBorderColor: token('color-primary'), lineColor: token('color-muted'),
+      secondaryColor: token('color-soft'), tertiaryColor: token('color-surface'),
+      clusterBkg: token('color-soft'), clusterBorder: token('color-border'),
+      edgeLabelBackground: token('color-surface'),
+    },
+  }
 }
 
 export default function App({ fileAccess = desktop ?? browserFiles }: { fileAccess?: FileAccess }) {
@@ -54,7 +61,7 @@ export default function App({ fileAccess = desktop ?? browserFiles }: { fileAcce
   const [ready, setReady] = useState(!!resumed)
   const canvas = useRef<HTMLDivElement>(null)
   const additions = useRef<HTMLDivElement>(null)
-  const hint = useRef<HTMLElement>(null)
+  const hint = useRef<HTMLDivElement>(null)
   const view = useRef<MermaidCanvasView | null>(null)
   const fileInput = useRef<HTMLInputElement>(null)
   const fileVersion = useRef(0)
@@ -91,7 +98,7 @@ export default function App({ fileAccess = desktop ?? browserFiles }: { fileAcce
   useEffect(() => {
     if (!canvas.current) return
     const next = new MermaidCanvasView({ editor, container: canvas.current, mermaid,
-      mermaidConfig: canvasConfig, accentColor: '#2563eb', panZoom: true,
+      mermaidConfig: canvasTheme(), accentColor: getComputedStyle(document.documentElement).getPropertyValue('--color-primary').trim(), panZoom: true,
       selectionControls: additions.current ? [additions.current] : [],
       readOnly: editor.result.typeInfo?.id !== 'flowchart', hintContainer: hint.current ?? undefined })
     view.current = next
@@ -154,7 +161,7 @@ export default function App({ fileAccess = desktop ?? browserFiles }: { fileAcce
       let opened = await fileAccess.open(file)
       await checking.current
       if (!opened || version !== fileVersion.current || !await mayLeave('open')) return
-      // Saving in the confirmation may have changed the selected file itself.
+      // 确认时保存的内容可能改变刚选中的文件，需要重新读取。
       if (native && opened.path) opened = await fileAccess.open(opened.path)
       if (!opened || version !== fileVersion.current) return
       const nextSession = await drafts.open(opened)
@@ -262,25 +269,36 @@ export default function App({ fileAccess = desktop ?? browserFiles }: { fileAcce
       const file = event.dataTransfer.files[0]
       if (!native && file && supportedFile(file.name)) void open(file)
     }}>
-    <header className="titlebar">{t('app.title')} — <span data-user-content="filename">{displayName}{dirty ? ' *' : ''}</span></header>
-    <div className="toolbar">
+    <header className="titlebar">
+      <div className="brand"><span className="brand-mark"><Icon name="diagram" /></span>
+        <span className="brand-name">Mermaid<span className="brand-caption">{t('workbench.editor')}</span></span>
+      </div>
+      <div className="document-name"><Icon name="file" /><span data-user-content="filename" title={displayName}>{displayName}</span>
+        {dirty && <span className="dirty-dot" aria-label={t('workbench.unsaved')} title={t('workbench.unsaved')} />}
+      </div>
+      <div className="file-actions">
+        <Button icon="new" title={t('tb.newHint')} onClick={() => void newDocument()}>{t('tb.new')}</Button>
+        <Button icon="open" onClick={() => native ? void open() : fileInput.current?.click()}>{t('tb.open')}</Button>
+        {native && <Button onClick={() => void save(true)}>{t('tb.saveAs')}</Button>}
+        <Button icon="save" className="primary" onClick={() => void save()}>{t('tb.save')}</Button>
+      </div>
+      <div className="language-switch" role="group" aria-label={t('aria.langSwitch')}>
+        <Button aria-label={t('workbench.chinese')} aria-pressed={locale === 'zh-CN'} onClick={() => setLocale('zh-CN')}>{t('app.zh')}</Button>
+        <Button aria-label={t('workbench.english')} aria-pressed={locale === 'en'} onClick={() => setLocale('en')}>{t('app.en')}</Button>
+      </div>
+    </header>
+    <div className="toolbar" role="group" aria-label={t('workbench.tools')}>
       <input ref={fileInput} type="file" hidden accept=".mmd,.mermaid,.md,.txt" aria-label={t('app.fileInput')}
         onChange={e => { const file = e.target.files?.[0]; e.target.value = ''; if (file) void open(file) }} />
       <div className="tool-group">
-        <Button title={t('tb.newHint')} onClick={() => void newDocument()}>{t('tb.new')}</Button>
-        <Button onClick={() => native ? void open() : fileInput.current?.click()}>{t('tb.open')}</Button>
-        <Button onClick={() => void save()}>{t('tb.save')}</Button>
-        {native && <Button onClick={() => void save(true)}>{t('tb.saveAs')}</Button>}
-      </div>
-      <div className="tool-group">
-        <Button disabled={!editor.canUndo} onClick={() => editor.undo()}>{t('tb.undo')}</Button>
-        <Button disabled={!editor.canRedo} onClick={() => editor.redo()}>{t('tb.redo')}</Button>
+        <Button icon="undo" disabled={!editor.canUndo} onClick={() => editor.undo()}>{t('tb.undo')}</Button>
+        <Button icon="redo" disabled={!editor.canRedo} onClick={() => editor.redo()}>{t('tb.redo')}</Button>
       </div>
       <div ref={additions} className="tool-group additions">
-        <Button disabled={!editable} aria-pressed={boxSelect} title={t('selection.boxHint')}
+        <Button icon="select" disabled={!editable} aria-pressed={boxSelect} title={t('selection.boxHint')}
           onClick={() => view.current?.setTool(boxSelect ? 'select' : 'box-select')}>{t('selection.box')}</Button>
-        <Button disabled={!editable} onClick={() => editor.dispatch({ type: 'addNode', label: t('drag.newNode') })}>{t('tb.addNode')}</Button>
-        <Button disabled={!editable} title={t('tb.groupHint')} onClick={() => editor.dispatch({
+        <Button icon="node" disabled={!editable} onClick={() => editor.dispatch({ type: 'addNode', label: t('drag.newNode') })}>{t('tb.addNode')}</Button>
+        <Button icon="group" disabled={!editable} title={t('tb.groupHint')} onClick={() => editor.dispatch({
           type: 'addSubgraph', title: t('ui.newGroup'),
           nodeIds: editor.selection.filter(id => id.startsWith('node:')).map(id => id.slice(5)),
         })}>{t('tb.addGroup')}</Button>
@@ -293,14 +311,8 @@ export default function App({ fileAccess = desktop ?? browserFiles }: { fileAcce
           }}>{t('direction.label')} {direction.arrow}</Button>
       </div>
       <div className="toolbar-right">
-        <span className={`sync-status${parseError ? ' error' : ''}`} role="status" aria-live="polite">
-          {t(parseError ? 'status.parseError' : 'status.synced', { n: dirty ? Math.max(1, changed.length) : 0 })}
-        </span>
-        <Button className="primary" onClick={() => void copy()}>{t('tb.copy')}</Button>
-        <div className="language-switch" role="group" aria-label={t('aria.langSwitch')}>
-          <Button aria-label={t('aria.langSwitch')} aria-pressed={locale === 'zh-CN'} className={locale === 'zh-CN' ? 'active' : ''} onClick={() => setLocale('zh-CN')}>{t('app.zh')}</Button>
-          <Button aria-label={t('aria.langSwitch')} aria-pressed={locale === 'en'} className={locale === 'en' ? 'active' : ''} onClick={() => setLocale('en')}>{t('app.en')}</Button>
-        </div>
+        <span className="workspace-caption"><Icon name="link" />{t('workbench.connected')}</span>
+
       </div>
     </div>
     {outside && <div className="draft-notice file-conflict" role="status"><span>{t('file.changedOutside')}</span>
@@ -319,7 +331,11 @@ export default function App({ fileAccess = desktop ?? browserFiles }: { fileAcce
     <main className={`workspace${sourceCollapsed ? ' source-collapsed' : ''}`}>
       {/* 隐藏时保留编辑器实例，展开后沿用光标、滚动位置和编辑历史。 */}
       <section id={sourcePanelId} className="codepanel" aria-label={t('app.source')} hidden={sourceCollapsed}>
+        <div className="panel-heading"><span className="panel-title"><Icon name="code" />{t('app.source')}</span>
+          <Button icon="copy" className="copy-button" onClick={() => void copy()}>{t('tb.copy')}</Button>
+        </div>
         <CodePane editor={editor} changed={changed} />
+        <div className="panel-footer"><span>Mermaid</span><span>{t('workbench.lines', { n: code.split('\n').length })}</span></div>
       </section>
       <div className="source-divider">
         <Button className="source-toggle" aria-label={t(sourceCollapsed ? 'app.expandSource' : 'app.collapseSource')}
@@ -330,11 +346,17 @@ export default function App({ fileAccess = desktop ?? browserFiles }: { fileAcce
         </Button>
       </div>
       <section className="canvas-panel" aria-label={t('app.canvas')}>
+        <div className="panel-heading"><span className="panel-title"><Icon name="diagram" />{t('workbench.liveCanvas')}</span>
+          <span className="mode-badge">{t(editable ? 'workbench.visualEdit' : 'workbench.preview')}</span>
+        </div>
         <div ref={canvas} className="canvas" />
+        <div className="panel-footer canvas-footer"><span className={`sync-status${parseError ? ' error' : ''}`} role="status" aria-live="polite">
+          <Icon name={parseError ? 'warning' : 'check'} />{t(parseError ? 'status.parseError' : 'status.synced', { n: dirty ? Math.max(1, changed.length) : 0 })}
+        </span><span className="canvas-format">{editor.result.typeInfo?.id ?? 'Mermaid'}</span></div>
         {toast && <div className="app-toast" role="status" aria-live="polite">{t(toast.key, { reason: toast.reason ?? '' })}</div>}
       </section>
     </main>
-    <footer ref={hint} className="hintbar" />
+    <footer className="hintbar"><div ref={hint} className="canvas-hints" /><span className="local-note"><Icon name="file" />{t('workbench.local')}</span></footer>
   </div>
 }
 
@@ -354,7 +376,9 @@ function CodePane({ editor, changed }: { editor: MermaidWysiwygEditor; changed: 
   return <div className="codepane" ref={ref} />
 }
 
-function Button(props: ButtonHTMLAttributes<HTMLButtonElement>) {
-  const label = props['aria-label'] ?? (typeof props.children === 'string' ? props.children : undefined)
-  return <button type="button" {...props} aria-label={label} title={props.title ?? label} />
+function Button({ icon, children, onClick, ...props }: ButtonHTMLAttributes<HTMLButtonElement> & { icon?: IconName }) {
+  const label = props['aria-label'] ?? (typeof children === 'string' ? children : undefined)
+  return <button type="button" {...props} onClick={onClick} aria-label={label} title={props.title ?? label}>
+    {icon && <Icon name={icon} />}{children}
+  </button>
 }

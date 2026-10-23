@@ -1,6 +1,18 @@
 import type en from './en'
 
 export default {
+  'workbench.chinese': '切换为中文',
+  'workbench.english': '切换为英文',
+  'workbench.editor': '编辑器',
+  'workbench.unsaved': '有未保存的修改',
+  'workbench.tools': '绘图工具',
+  'workbench.connected': '源码与画布，双向同步',
+  'workbench.lines': '{n} 行',
+  'workbench.liveCanvas': '实时画布',
+  'workbench.visualEdit': '可视化编辑',
+  'workbench.preview': '只读预览',
+  'workbench.local': '文件保存在本地',
+
   'tb.open': "打开",
   'tb.new': "新建",
   'direction.label': "方向",

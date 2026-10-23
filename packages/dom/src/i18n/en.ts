@@ -1,4 +1,16 @@
 export default {
+  'workbench.chinese': 'Switch to Chinese',
+  'workbench.english': 'Switch to English',
+  'workbench.editor': 'Editor',
+  'workbench.unsaved': 'Unsaved changes',
+  'workbench.tools': 'Drawing tools',
+  'workbench.connected': 'Code & canvas, in sync',
+  'workbench.lines': '{n} lines',
+  'workbench.liveCanvas': 'Live canvas',
+  'workbench.visualEdit': 'Visual editing',
+  'workbench.preview': 'Preview only',
+  'workbench.local': 'Files stay on your device',
+
   'tb.open': "Open",
   'tb.new': "New",
   'direction.label': "Direction",

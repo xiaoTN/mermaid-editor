@@ -1,0 +1,13 @@
+{
+  "profile": "product-admin",
+  "sourceRoots": ["apps/playground/src"],
+  "locale": "zh-CN",
+  "canonicalMap": "DESIGN.md",
+  "requiredCapabilities": ["Scrollbar", "Toast"],
+  "requiredCommands": ["typecheck", "test", "build"],
+  "commands": {
+    "typecheck": "pnpm typecheck",
+    "test": "pnpm test",
+    "build": "pnpm --filter playground build"
+  }
+}
