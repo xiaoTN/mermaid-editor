@@ -8,6 +8,8 @@ export type FlowchartOp =
   | { type: 'addSubgraph'; title: string; nodeIds?: string[] }
   | { type: 'moveNodeToSubgraph'; id: string; subgraph: string | null }
   | { type: 'reorderNodes'; ids: string[] }
+  | { type: 'moveSubgraph'; id: string; subgraph: string | null }
+  | { type: 'reorderSubgraphs'; ids: string[] }
   | { type: 'connect'; source: string; target: string; line?: EdgeLine; arrowEnd?: EdgeArrow; label?: string; insideGroup?: boolean }
   | { type: 'renameNode'; id: string; label: string }
   | { type: 'setNodeShape'; id: string; shape: ShapeId }
@@ -501,6 +503,141 @@ function exactGroup(graph: FlowGraph, id: string) {
   return groups.length === 1 && groups[0].endLine > groups[0].openLine ? groups[0] : null
 }
 
+/** 按闭合顺序判断实际归属，兼容节点先在组外引用、随后在组内声明的写法。 */
+function nodeGroup(graph: FlowGraph, node: FlowNode): string | null {
+  return graph.subgraphs.filter(group => group.endLine > group.openLine &&
+    node.refs.some(ref => ref.lineIndex > group.openLine && ref.lineIndex < group.endLine))
+    .sort((a, b) => a.endLine - b.endLine)[0]?.id ?? null
+}
+
+/** 包含分组自身、子组和全部内部节点，供整组拖动与循环包含检查共用。 */
+export function flowchartSubgraphContains(graph: FlowGraph, groupId: string, id: string): boolean {
+  const seen = new Set<string>()
+  let current: string | null = id
+  while (current && !seen.has(current)) {
+    if (current === groupId) return true
+    seen.add(current)
+    const group = exactGroup(graph, current), node = graph.nodeById.get(current)
+    current = group ? group.parent : node ? nodeGroup(graph, node) : null
+  }
+  return false
+}
+
+/** 仅整行书写、完整闭合且同属一个父组的分组可以交换源码块。 */
+export function flowchartSubgraphOrderPeers(graph: FlowGraph, id: string): string[] {
+  const group = exactGroup(graph, id)
+  if (!group) return []
+  return graph.subgraphs.filter(peer => peer.parent === group.parent && exactGroup(graph, peer.id) &&
+    graph.statements.get(peer.openLine)?.length === 1 && graph.statements.get(peer.endLine)?.length === 1)
+    .map(peer => peer.id)
+}
+
+function projectFlowchart(code: string): FlowOpContext {
+  const lines = scanLines(code), { headerIndex } = classifyLines(lines)
+  return { code, lines, graph: buildFlowGraph(lines, headerIndex) }
+}
+
+/** 检查移动前后图的含义；只有指定分组的父级允许变化。 */
+function subgraphSemantics(ctx: FlowOpContext, movedId?: string, parent?: string | null): string {
+  const { graph } = ctx
+  const sorted = (rows: unknown[]) => rows.map(row => JSON.stringify(row)).sort()
+  const effects = new Map<string, string[]>()
+  for (const stmt of [...graph.statements.values()].flat()) {
+    if (stmt.kind === 'chain' || stmt.kind === 'subgraphOpen' || stmt.kind === 'end' || stmt.kind === 'direction' || stmt.kind === 'linkStyle') continue
+    const raw = slice(ctx, stmt.span)
+    const keys = stmt.ids.length ? stmt.ids.map(id => `${stmt.kind}:${id}`)
+      : [`${stmt.kind}:${/^\S+\s+(\S+)/.exec(raw)?.[1] ?? raw}`]
+    for (const key of keys) effects.set(key, [...effects.get(key) ?? [], raw])
+  }
+  return JSON.stringify([
+    sorted(graph.nodes.filter(node => !exactGroup(graph, node.id)).map(node =>
+      [node.id, node.label, node.shape, node.primary?.ref.attrsRaw, [...node.classes].sort(), nodeGroup(graph, node)])),
+    sorted(graph.subgraphs.map(group => [group.id, group.title, group.id === movedId ? parent : group.parent,
+      group.directionLines.map(index => ctx.lines[index].text.trim())])),
+    sorted(graph.edges.map(edge => [edge.source, edge.target, edge.seg.edgeId, edge.seg.line,
+      edge.seg.arrowStart, edge.seg.arrowEnd, edge.label])),
+    sorted([...effects]),
+  ])
+}
+
+/** 将按序号设置的边样式放到连线之后，再按新的边序号回写。 */
+function finishSubgraphEdit(ctx: FlowOpContext, code: string, movedId?: string, parent?: string | null): OpResult | null {
+  let work = projectFlowchart(code)
+  if (subgraphSemantics(ctx, movedId, parent) !== subgraphSemantics(work)) return null
+  if (work.graph.edges.some(edge => invalidGroupConnection(work.graph, edge.source, edge.target))) return null
+  const styles: string[] = [], changes: StatementChanges = new Map()
+  const remap = orderPermutation(ctx.graph.edges, code)
+  for (const stmt of [...work.graph.statements.values()].flat()) {
+    if (stmt.kind !== 'linkStyle') continue
+    const style = remapLinkStyle(slice(work, stmt.span), remap)
+    if (style === null) return null
+    styles.push(work.lines[stmt.lineIndex].indent + style)
+    changes.set(stmt, [])
+  }
+  if (styles.length) {
+    work = projectFlowchart(applyEdits(code, statementEdits(work, changes)).text)
+    code = applyEdits(work.code, [insertLinesAfter(work, work.graph.lastContentLine, styles)]).text
+  }
+  const edit = diffText(ctx.code, code)
+  return { edits: edit ? [edit] : [], created: movedId ? [`subgraph:${movedId}`] : undefined }
+}
+
+function subgraphBlock(ctx: FlowOpContext, id: string, indent: string): string | null {
+  const group = exactGroup(ctx.graph, id)
+  if (!group || !flowchartSubgraphOrderPeers(ctx.graph, id).includes(id)) return null
+  const base = ctx.lines[group.openLine].indent
+  return ctx.lines.slice(group.openLine, group.endLine + 1).map(line => {
+    const text = slice(ctx, lineBody(line))
+    // 多行标签中的换行和空格属于文字，不能当成源码缩进改写。
+    return line.kind !== 'continuation' && text.startsWith(base) ? indent + text.slice(base.length) : text
+  }).join(eolOf(ctx))
+}
+
+/** 整块搬运分组，不拆开内部节点、子组、注释和连线。 */
+function moveSubgraph(ctx: FlowOpContext, id: string, subgraph: string | null): OpResult | null {
+  const group = exactGroup(ctx.graph, id)
+  if (!group || group.parent === subgraph) return group ? { edits: [] } : null
+  if (subgraph !== null && (!exactGroup(ctx.graph, subgraph) || flowchartSubgraphContains(ctx.graph, id, subgraph))) return null
+  const target = subgraph === null ? null : exactGroup(ctx.graph, subgraph)!
+  const indent = target ? ctx.lines[target.openLine].indent + '  ' : bodyIndent(ctx)
+  const block = subgraphBlock(ctx, id, indent)
+  if (!block) return null
+  const start = ctx.lines[group.openLine].start, end = lineBody(ctx.lines[group.endLine]).end
+  const work = projectFlowchart(applyEdits(ctx.code, [{ start, end, text: '' }]).text)
+  const destination = subgraph === null ? null : exactGroup(work.graph, subgraph)!
+  const edit = destination ? insertLinesBefore(work, destination.endLine, block.split(eolOf(ctx)))
+    : insertLinesAfter(work, work.graph.headerLine, block.split(eolOf(ctx)))
+  return finishSubgraphEdit(ctx, applyEdits(work.code, [edit]).text, id, subgraph)
+}
+
+/** 先交换完整分组，再调整同一入口的分行连线；实际位置仍由预览确认。 */
+function reorderSubgraphs(ctx: FlowOpContext, ids: string[]): OpResult | null {
+  if (ids.length < 2 || new Set(ids).size !== ids.length) return null
+  const peers = flowchartSubgraphOrderPeers(ctx.graph, ids[0])
+  if (!ids.every(id => peers.includes(id))) return null
+  const slots = ids.map(id => exactGroup(ctx.graph, id)!).sort((a, b) => a.openLine - b.openLine)
+  if (slots.every((group, index) => group.id === ids[index])) return { edits: [] }
+  const edits: TextEdit[] = slots.map((slot, index) => ({ start: ctx.lines[slot.openLine].start,
+    end: lineBody(ctx.lines[slot.endLine]).end, text: subgraphBlock(ctx, ids[index], ctx.lines[slot.openLine].indent)! }))
+  const owner = (id: string) => ids.find(group => flowchartSubgraphContains(ctx.graph, group, id))
+  const entries = new Map<string, FlowEdge[]>()
+  for (const edge of ctx.graph.edges) {
+    if (!owner(edge.target) || owner(edge.source) || slots.some(group => edge.lineIndex >= group.openLine && edge.lineIndex <= group.endLine)) continue
+    const list = entries.get(edge.source) ?? []; list.push(edge); entries.set(edge.source, list)
+  }
+  for (const edges of entries.values()) {
+    if (edges.length < 2) continue
+    if (edges.some(edge => {
+      const statements = ctx.graph.statements.get(edge.lineIndex), stmt = statements?.[0]
+      return statements?.length !== 1 || stmt?.kind !== 'chain' || stmt.groups.length !== 2 ||
+        stmt.groups.some(refs => refs.length !== 1) || stmt.span.end > lineBody(ctx.lines[edge.lineIndex]).end
+    })) return null
+    const ordered = [...edges].sort((a, b) => ids.indexOf(owner(a.target)!) - ids.indexOf(owner(b.target)!))
+    edges.forEach((edge, index) => edits.push({ ...lineBody(ctx.lines[edge.lineIndex]), text: slice(ctx, lineBody(ctx.lines[ordered[index].lineIndex])) }))
+  }
+  return finishSubgraphEdit(ctx, applyEdits(ctx.code, edits).text)
+}
+
 /** 分组无需先被连线引用，也可以直接作为箭头端点。 */
 function endpointOf(graph: FlowGraph, id: string) {
   if (graph.subgraphs.some(group => group.id === id)) {
@@ -512,15 +649,7 @@ function endpointOf(graph: FlowGraph, id: string) {
 
 /** Mermaid 无法绘制分组与自身或其内部成员之间的循环包含关系。 */
 function containsEndpoint(graph: FlowGraph, groupId: string, id: string): boolean {
-  if (!exactGroup(graph, groupId)) return false
-  const visited = new Set<string>()
-  let parent: string | null | undefined = id
-  while (parent && !visited.has(parent)) {
-    if (parent === groupId) return true
-    visited.add(parent)
-    parent = endpointOf(graph, parent)?.subgraph
-  }
-  return false
+  return !!exactGroup(graph, groupId) && flowchartSubgraphContains(graph, groupId, id)
 }
 
 function invalidGroupConnection(graph: FlowGraph, source: string, target: string) {
@@ -655,6 +784,10 @@ export function compileFlowchartOp(ctx: FlowOpContext, op: FlowchartOp): OpResul
   switch (op.type) {
     case 'reorderNodes':
       return reorderNodes(ctx, op.ids)
+    case 'moveSubgraph':
+      return moveSubgraph(ctx, op.id, op.subgraph)
+    case 'reorderSubgraphs':
+      return reorderSubgraphs(ctx, op.ids)
     case 'moveNodeToSubgraph':
       return moveNodeToSubgraph(ctx, op.id, op.subgraph)
     case 'addSubgraph': {

@@ -1,4 +1,4 @@
-import { MermaidWysiwygEditor, flowchartOrderPeers, mermaidSource, type EditorNotice, type FlowchartOp } from '@inkeep/mermaid-wysiwyg-core'
+import { MermaidWysiwygEditor, flowchartOrderPeers, flowchartSubgraphOrderPeers, flowchartSubgraphContains, mermaidSource, type EditorNotice, type FlowchartOp } from '@inkeep/mermaid-wysiwyg-core'
 import { correlateFlowchart } from './correlate'
 import { t, onLocaleChange } from './i18n'
 import type { MermaidLike } from './view'
@@ -13,6 +13,7 @@ interface Session {
   order: Order | null
   boxes: Map<string, Box>
   keyboard: boolean
+  isGroup: boolean
 }
 interface Candidate {
   key: string
@@ -20,9 +21,16 @@ interface Candidate {
   code: string
   order?: Order
   state: 'loading' | 'ready' | 'blocked'
+  alternate: boolean
 }
 
 let previewSerial = 0
+
+function sameLayer(a: Box, b: Box, axis: Axis, isGroup: boolean) {
+  const other = axis === 'x' ? 'y' : 'x'
+  const size = other === 'x' ? 'width' : 'height'
+  return Math.abs(a[other] - b[other]) <= (isGroup ? (a[size] + b[size]) / 2 - 1 : 4)
+}
 
 /** 拖动只修改临时副本；真实排版通过且预览已经显示后，才允许提交一次修改。 */
 export class NodeMovePreview {
@@ -70,29 +78,40 @@ export class NodeMovePreview {
 
   private snapshot(id: string, svg: SVGSVGElement): Session {
     const boxes = new Map<string, Box>()
-    for (const node of svg.querySelectorAll<SVGGraphicsElement>('[data-mw-entity^="node:"]')) {
-      const box = node.getBoundingClientRect()
-      boxes.set(node.getAttribute('data-mw-entity')!.slice(5), {
+    for (const node of svg.querySelectorAll<SVGGraphicsElement>('[data-mw-entity^="node:"], [data-mw-entity^="subgraph:"]')) {
+      const box = (node.getAttribute('data-mw-entity')!.startsWith('subgraph:') ? node.querySelector(':scope > rect') ?? node : node).getBoundingClientRect()
+      boxes.set(node.getAttribute('data-mw-entity')!.replace(/^(node|subgraph):/, ''), {
         x: box.left + box.width / 2, y: box.top + box.height / 2, width: box.width, height: box.height,
       })
     }
     const graph = this.editor.result.flowchart!
+    const group = graph.subgraphs.find(group => group.id === id), isGroup = !!group
+    let parent = graph.subgraphs.find(parent => parent.id === group?.parent), direction = graph.direction
+    while (parent) {
+      const directionLine = parent.directionLines.at(-1)
+      if (directionLine !== undefined) {
+        direction = /\bdirection\s+(TD|TB|BT|LR|RL)\b/.exec(this.editor.result.lines[directionLine].text)?.[1] ?? direction
+        break
+      }
+      parent = graph.subgraphs.find(group => group.id === parent!.parent)
+    }
+    const groupAxis: Axis = direction === 'LR' || direction === 'RL' ? 'y' : 'x'
     const source = boxes.get(id)
-    const peers = flowchartOrderPeers(graph, id).filter(peer => boxes.has(peer))
+    const peers = (isGroup ? flowchartSubgraphOrderPeers(graph, id) : flowchartOrderPeers(graph, id)).filter(peer => boxes.has(peer))
     let order: Order | null = null
     if (source) {
       for (const peer of peers.filter(peer => peer !== id)) {
         const box = boxes.get(peer)!
-        const axis: Axis | null = Math.abs(box.y - source.y) <= 4 && Math.abs(box.x - source.x) > 4 ? 'x'
-          : Math.abs(box.x - source.x) <= 4 && Math.abs(box.y - source.y) > 4 ? 'y' : null
+        const axis: Axis | null = isGroup ? sameLayer(box, source, groupAxis, true) && Math.abs(box[groupAxis] - source[groupAxis]) > 4 ? groupAxis : null
+          : sameLayer(box, source, 'x', false) && Math.abs(box.x - source.x) > 4 ? 'x'
+          : sameLayer(box, source, 'y', isGroup) && Math.abs(box.y - source.y) > 4 ? 'y' : null
         if (!axis) continue
-        const other = axis === 'x' ? 'y' : 'x'
-        order = { axis, ids: peers.filter(peer => Math.abs(boxes.get(peer)![other] - source[other]) <= 4)
+        order = { axis, ids: peers.filter(peer => sameLayer(boxes.get(peer)!, source, axis, isGroup))
           .sort((a, b) => boxes.get(a)![axis] - boxes.get(b)![axis]) }
         break
       }
     }
-    return { id, code: this.editor.code, group: graph.nodeById.get(id)?.subgraph ?? null, boxes, order, keyboard: false }
+    return { id, code: this.editor.code, group: isGroup ? group.parent : graph.nodeById.get(id)?.subgraph ?? null, boxes, order, keyboard: false, isGroup }
   }
 
   begin(id: string, svg: SVGSVGElement) {
@@ -107,10 +126,10 @@ export class NodeMovePreview {
     this.applyButton.disabled = true
     this.panel.style.pointerEvents = 'none'
     this.panel.hidden = false
-    this.idle('preview.choose')
+    this.idle(this.session.isGroup ? 'preview.groupChoose' : 'preview.choose')
   }
 
-  private idle(key: 'preview.choose' | 'preview.unsupported' | 'drag.moveCancel') {
+  private idle(key: 'preview.choose' | 'preview.unsupported' | 'preview.groupChoose' | 'preview.groupUnsupported' | 'preview.groupCycle' | 'drag.moveCancel') {
     ++this.generation
     if (this.timer) clearTimeout(this.timer)
     this.timer = null; this.candidate = null
@@ -123,34 +142,41 @@ export class NodeMovePreview {
     const session = this.session
     if (!session) return
     if (!valid) { this.idle('drag.moveCancel'); return }
+    if (session.isGroup && group && flowchartSubgraphContains(this.editor.result.flowchart!, session.id, group)) {
+      this.idle('preview.groupCycle'); return
+    }
     if (group !== session.group) {
-      this.request({ type: 'moveNodeToSubgraph', id: session.id, subgraph: group })
+      this.request({ type: session.isGroup ? 'moveSubgraph' : 'moveNodeToSubgraph', id: session.id, subgraph: group })
       return
     }
     const order = session.order, source = session.boxes.get(session.id)
-    if (!order || !source) { this.idle('preview.unsupported'); return }
+    if (!order || !source) { this.idle(session.isGroup ? 'preview.groupUnsupported' : 'preview.unsupported'); return }
     const other = order.axis === 'x' ? 'y' : 'x'
     const cross = other === 'x' ? x : y
     const span = other === 'x' ? source.width : source.height
-    if (Math.abs(cross - source[other]) > span / 2 + 24) { this.idle('preview.unsupported'); return }
+    if (Math.abs(cross - source[other]) > span / 2 + 24) { this.idle(session.isGroup ? 'preview.groupUnsupported' : 'preview.unsupported'); return }
     const coordinate = order.axis === 'x' ? x : y
     const ids = order.ids.filter(id => id !== session.id)
     const before = ids.findIndex(id => session.boxes.get(id)![order.axis] > coordinate)
     ids.splice(before < 0 ? ids.length : before, 0, session.id)
-    if (ids.join('\0') === order.ids.join('\0')) { this.idle('preview.choose'); return }
-    this.request({ type: 'reorderNodes', ids }, { axis: order.axis, ids })
+    if (ids.join('\0') === order.ids.join('\0')) { this.idle(session.isGroup ? 'preview.groupChoose' : 'preview.choose'); return }
+    this.request({ type: session.isGroup ? 'reorderSubgraphs' : 'reorderNodes', ids }, { axis: order.axis, ids })
   }
 
-  private request(op: FlowchartOp, order?: Order) {
+  private request(op: FlowchartOp, order?: Order, alternate = false, key = JSON.stringify(op)) {
     const session = this.session
     if (!session) return
-    const key = JSON.stringify(op)
-    if (this.candidate?.key === key) return
+    if (!alternate && this.candidate?.key === key) return
     const draft = new MermaidWysiwygEditor({ code: session.code })
     const result = draft.dispatch(op)
-    if (!result?.edits.length || result.warnings?.length) { this.idle('preview.unsupported'); return }
+    if (!result?.edits.length || result.warnings?.length) {
+      if (op.type === 'reorderSubgraphs' && order && !alternate) {
+        this.request({ type: 'reorderSubgraphs', ids: [...op.ids].reverse() }, order, true, key); return
+      }
+      this.idle(session.isGroup ? 'preview.groupUnsupported' : 'preview.unsupported'); return
+    }
     if (this.timer) clearTimeout(this.timer)
-    const candidate: Candidate = { key, op, code: draft.code, order, state: 'loading' }
+    const candidate: Candidate = { key, op, code: draft.code, order, state: 'loading', alternate }
     this.candidate = candidate
     const generation = ++this.generation
     this.image.replaceChildren()
@@ -179,15 +205,20 @@ export class NodeMovePreview {
       if (candidate.order) {
         const { axis, ids } = candidate.order
         const positions = ids.map(id => {
-          const box = correlation.nodes.get(`node:${id}`)?.getBoundingClientRect()
-          return box ? { x: box.left + box.width / 2, y: box.top + box.height / 2 } : null
+          const entity = correlation.nodes.get(`${session.isGroup ? 'subgraph' : 'node'}:${id}`)
+          const box = (session.isGroup ? entity?.querySelector(':scope > rect') ?? entity : entity)?.getBoundingClientRect()
+          return box ? { x: box.left + box.width / 2, y: box.top + box.height / 2, width: box.width, height: box.height } : null
         })
-        const other = axis === 'x' ? 'y' : 'x'
         valid &&= positions.every((box, index) => !!box && !!positions[0] &&
-          Math.abs(box[other] - positions[0]![other]) <= 4 &&
+          sameLayer(box, positions[0]!, axis, session.isGroup) &&
           (index === 0 || box[axis] > positions[index - 1]![axis] + 1))
       }
-      correlation.nodes.get(`node:${session.id}`)?.classList.add('mw-preview-focus')
+      // Mermaid 对分组声明的排列可能反向；最多尝试另一种源码顺序，并始终核对用户要求的画面顺序。
+      if (!valid && candidate.op.type === 'reorderSubgraphs' && candidate.order && !candidate.alternate) {
+        this.request({ type: 'reorderSubgraphs', ids: [...candidate.op.ids].reverse() }, candidate.order, true, candidate.key)
+        return
+      }
+      correlation.nodes.get(`${session.isGroup ? 'subgraph' : 'node'}:${session.id}`)?.classList.add('mw-preview-focus')
       // 缩略图不参与主画布的节点命中、框选和分组检测。
       for (const element of svg.querySelectorAll('[data-mw-entity], [data-mw-ambiguous]')) {
         element.removeAttribute('data-mw-entity'); element.removeAttribute('data-mw-ambiguous')
@@ -223,7 +254,7 @@ export class NodeMovePreview {
     if (canApply) {
       // 直接应用已验证的完整候选，保证保存的源码与小窗展示的是同一次计算结果。
       this.editor.setCode(candidate!.code, 'canvas')
-      this.editor.setSelection([`node:${session.id}`], 'canvas')
+      this.editor.setSelection([`${session.isGroup ? 'subgraph' : 'node'}:${session.id}`], 'canvas')
       this.host.focus({ preventScroll: true })
       this.notify([{ key: 'preview.applied', action: { key: 'toast.undo' } }])
     } else if (candidate) this.notify([{ key: warning }])
@@ -249,7 +280,19 @@ export class NodeMovePreview {
     this.cancelButton.focus()
     const order = session.order!, ids = [...order.ids], index = ids.indexOf(id)
     ;[ids[index], ids[index + step]] = [ids[index + step], ids[index]]
-    this.request({ type: 'reorderNodes', ids }, { axis: order.axis, ids })
+    this.request({ type: session.isGroup ? 'reorderSubgraphs' : 'reorderNodes', ids }, { axis: order.axis, ids })
+  }
+
+  /** 分组菜单提供不依赖拖动的目标选择，同样先预览再应用。 */
+  relocate(id: string, group: string | null) {
+    const svg = this.svg()
+    if (!svg || this.readonly()) return
+    this.begin(id, svg)
+    this.session!.keyboard = true
+    this.actions.hidden = false
+    this.panel.style.pointerEvents = 'auto'
+    this.cancelButton.focus()
+    this.request({ type: 'moveSubgraph', id, subgraph: group })
   }
 
   cancel() {

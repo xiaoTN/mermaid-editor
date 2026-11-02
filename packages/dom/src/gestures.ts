@@ -1,5 +1,5 @@
 import { t, onLocaleChange } from './i18n'
-import { MermaidWysiwygEditor, diffText, type EditorNotice } from '@inkeep/mermaid-wysiwyg-core'
+import { MermaidWysiwygEditor, diffText, flowchartSubgraphContains, type EditorNotice } from '@inkeep/mermaid-wysiwyg-core'
 import type { NodeMovePreview } from './nodeMovePreview'
 
 /** 优先命中内部节点；分组自身的标题、边框和空白也可作为端点。 */
@@ -20,7 +20,8 @@ interface NodeMove {
   x: number
   y: number
   pointerId: number
-  transform: string | null
+  elements: { node: SVGGraphicsElement; transform: string | null }[]
+  isGroup: boolean
   code: string
   active: boolean
   valid: boolean
@@ -86,9 +87,24 @@ export class FlowchartGestures {
   private beginNodeMove(e: PointerEvent) {
     if (this.drag || this.readonly() || !this.canMoveNode() || e.button !== 0 || e.altKey || e.shiftKey || e.metaKey || e.ctrlKey || e.detail > 1) return
     const node = flowchartEndpoint(this.host, e.target as Element) as SVGGraphicsElement | null
-    if (!node?.getAttribute('data-mw-entity')?.startsWith('node:') || !node.ownerSVGElement) return
+    if (!node?.ownerSVGElement) return
+    const id = endpointId(node), graph = this.editor.result.flowchart!
+    const isGroup = node.getAttribute('data-mw-entity')!.startsWith('subgraph:')
+    const entities = new Set([node.getAttribute('data-mw-entity')!])
+    if (isGroup) {
+      for (const item of [...graph.nodes, ...graph.subgraphs]) {
+        if (flowchartSubgraphContains(graph, id, item.id)) entities.add(item.entityId)
+      }
+      for (const edge of graph.edges) {
+        if (flowchartSubgraphContains(graph, id, edge.source) && flowchartSubgraphContains(graph, id, edge.target)) entities.add(edge.entityId)
+      }
+    }
+    const elements = [...node.ownerSVGElement.querySelectorAll<SVGGraphicsElement>('[data-mw-entity]')]
+      .filter(element => entities.has(element.getAttribute('data-mw-entity')!))
+    // 有些渲染器把成员放进分组元素里，只移动最外层，避免子元素被重复平移。
+    const roots = elements.filter(element => !elements.some(parent => parent !== element && parent.contains(element)))
     this.nodeMove = { node, svg: node.ownerSVGElement, id: endpointId(node), x: e.clientX, y: e.clientY,
-      pointerId: e.pointerId, transform: node.getAttribute('transform'), code: this.editor.code,
+      pointerId: e.pointerId, elements: roots.map(node => ({ node, transform: node.getAttribute('transform') })), isGroup, code: this.editor.code,
       active: false, valid: false, group: null, target: null }
   }
 
@@ -96,29 +112,33 @@ export class FlowchartGestures {
     const drag = this.nodeMove
     if (!drag || e.pointerId !== drag.pointerId) return
     if (this.readonly() || !this.canMoveNode() || drag.code !== this.editor.code) { this.cancel(); return }
-    let dx = e.clientX - drag.x, dy = e.clientY - drag.y
+    const dx = e.clientX - drag.x, dy = e.clientY - drag.y
     if (!drag.active && Math.hypot(dx, dy) < 5) return
     e.preventDefault()
     if (!drag.active) {
       drag.active = true; this.clearPorts(); this.ends.replaceChildren(); this.onNodeMove()
       this.nodePreview?.begin(drag.id, drag.svg)
-      drag.node.classList.add('mw-node-moving')
+      drag.elements.forEach(({ node }) => node.classList.add('mw-node-moving'))
       try { drag.svg.setPointerCapture?.(e.pointerId) } catch { /* 合成指针事件可能不支持捕获。 */ }
     }
     // 使用父级屏幕矩阵换算位移，缩放或平移画布后节点仍跟随指针。
-    const matrix = (drag.node.parentElement as unknown as SVGGraphicsElement)?.getScreenCTM?.()?.inverse()
-    if (matrix) {
-      const from = new DOMPoint(drag.x, drag.y).matrixTransform(matrix)
-      const to = new DOMPoint(e.clientX, e.clientY).matrixTransform(matrix)
-      dx = to.x - from.x; dy = to.y - from.y
+    for (const { node, transform } of drag.elements) {
+      const matrix = (node.parentElement as unknown as SVGGraphicsElement)?.getScreenCTM?.()?.inverse()
+      let offsetX = dx, offsetY = dy
+      if (matrix) {
+        const from = new DOMPoint(drag.x, drag.y).matrixTransform(matrix)
+        const to = new DOMPoint(e.clientX, e.clientY).matrixTransform(matrix)
+        offsetX = to.x - from.x; offsetY = to.y - from.y
+      }
+      node.setAttribute('transform', `translate(${offsetX},${offsetY}) ${transform ?? ''}`)
     }
-    drag.node.setAttribute('transform', `translate(${dx},${dy}) ${drag.transform ?? ''}`)
     drag.target?.classList.remove('mw-group-drop-target')
     const hit = document.elementFromPoint(e.clientX, e.clientY)
     drag.valid = !!hit && this.host.contains(hit) && (drag.svg.contains(hit) || hit === this.host || !!hit.closest('.mw-svg-host')) &&
       !hit.closest('button, input, [contenteditable="true"], .mw-popover, [data-mw-ambiguous]')
     // Mermaid 的成员节点与分组边框不一定是 DOM 父子关系，按边框范围寻找最内层分组。
     const candidates = drag.valid ? [...this.host.querySelectorAll('[data-mw-entity^="subgraph:"]')].flatMap(group => {
+      if (drag.isGroup && flowchartSubgraphContains(this.editor.result.flowchart!, drag.id, endpointId(group))) return []
       const box = (group.querySelector(':scope > rect') ?? group.querySelector('rect'))?.getBoundingClientRect()
       return box && box.width > 0 && box.height > 0 && e.clientX >= box.left && e.clientX <= box.right && e.clientY >= box.top && e.clientY <= box.bottom
         ? [{ group, area: box.width * box.height }] : []
@@ -149,7 +169,7 @@ export class FlowchartGestures {
     this.blockNodeClick = true
     if (this.clickTimer) clearTimeout(this.clickTimer)
     this.clickTimer = setTimeout(() => { this.blockNodeClick = false; this.clickTimer = null }, 0)
-    if (commit && !previewHandled) this.editor.dispatch({ type: 'moveNodeToSubgraph', id: drag.id, subgraph: drag.group })
+    if (commit && !previewHandled) this.editor.dispatch({ type: drag.isGroup ? 'moveSubgraph' : 'moveNodeToSubgraph', id: drag.id, subgraph: drag.group })
     this.refresh()
   }
 
@@ -317,9 +337,12 @@ export class FlowchartGestures {
   cancel() {
     this.nodePreview?.cancel()
     if (this.nodeMove) {
-      const { node, svg, pointerId, transform, target } = this.nodeMove
-      node.classList.remove('mw-node-moving'); target?.classList.remove('mw-group-drop-target')
-      if (transform === null) node.removeAttribute('transform'); else node.setAttribute('transform', transform)
+      const { elements, svg, pointerId, target } = this.nodeMove
+      target?.classList.remove('mw-group-drop-target')
+      for (const { node, transform } of elements) {
+        node.classList.remove('mw-node-moving')
+        if (transform === null) node.removeAttribute('transform'); else node.setAttribute('transform', transform)
+      }
       try { if (svg.hasPointerCapture?.(pointerId)) svg.releasePointerCapture(pointerId) } catch { /* 取消时指针可能已经释放。 */ }
       this.nodeMove = null
     }

@@ -6,6 +6,7 @@ import { NodeMovePreview, NODE_MOVE_PREVIEW_CSS } from './nodeMovePreview'
 import {
   MermaidWysiwygEditor,
   mermaidSource,
+  flowchartSubgraphContains,
   MESSAGE_OPS,
   PARTICIPANT_TYPES,
   type Diagnostic,
@@ -1700,8 +1701,21 @@ export class MermaidCanvasView {
     }
 
     if (flowchart && id.startsWith('subgraph:')) {
+      const group = flowchart.subgraphs.find(group => group.entityId === id)
+      if (!group) return []
+      const destinations = [
+        ...(group.parent ? [{ glyph: '↗', title: t('group.moveRoot'), onClick: () => this.nodePreview.relocate(group.id, null) }] : []),
+        ...flowchart.subgraphs.filter(target => target.id !== group.parent && !flowchartSubgraphContains(flowchart, group.id, target.id))
+          .map(target => ({ glyph: '↪', title: t('group.moveInto', { name: target.title ?? target.id }),
+            onClick: () => this.nodePreview.relocate(group.id, target.id) })),
+      ]
       return [
         { icon: ICONS.pencil, title: t('ui.renameSubgraph'), onClick: () => this.editEntityLabel(id) },
+        ...([-1, 1] as const).filter(step => this.nodePreview.canNudge(group.id, step)).map(step => ({
+          glyph: step < 0 ? '←' : '→', title: t(step < 0 ? 'group.orderEarlier' : 'group.orderLater'),
+          onClick: () => this.nodePreview.nudge(group.id, step),
+        })),
+        ...(destinations.length ? [{ glyph: '↪', title: t('group.move'), panel: { title: t('group.move'), layout: 'destinations' as const, items: destinations } }] : []),
         { glyph: t('group.ungroup'), title: t('group.ungroup'), danger: true, onClick: () => this.editor.deleteEntities([id]) },
       ]
     }
