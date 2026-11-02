@@ -83,7 +83,7 @@ export default {
   'group.moveInto': 'Move into “{name}”',
   'group.orderEarlier': 'Move group earlier',
   'group.orderLater': 'Move group later',
-  'preview.unsupported': 'Ordering requires sibling nodes in the same group and layer, with one shared parent and separate edge lines.',
+  'preview.unsupported': 'Ordering requires nodes in the same group and layer with a shared source and separate branch edge lines. Other connections are preserved.',
   'preview.loading': 'Calculating the new layout. Pause here until the preview is ready.',
   'preview.ready': 'Preview ready. Release to apply; Esc cancels.',
   'preview.keyboardReady': 'Preview ready. Choose Apply or Cancel.',

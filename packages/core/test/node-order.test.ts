@@ -29,7 +29,6 @@ it('嵌套分组和 Markdown 包装保持原样', () => {
 it.each([
   ['链式连线', 'flowchart TD\n A --> B --> C\n'],
   ['合并分支', 'flowchart TD\n A --> B & C\n'],
-  ['多入口', 'flowchart TD\n A --> B\n A --> C\n D --> C\n'],
   ['不同分组', 'flowchart TD\n subgraph one\n B\n end\n A --> B\n A --> C\n'],
   ['重复定义会变义', 'flowchart TD\n A[旧入口] --> B\n A[新入口] --> C\n'],
 ])('%s 不做不安全重排', (_name, original) => {

@@ -442,31 +442,35 @@ function orderPermutation(before: FlowEdge[], afterCode: string): (index: number
   return (index) => permutation.get(index) ?? null
 }
 
-/** 只开放同一分组、同一入口下的独立分支，链式或合并写法继续通过源码编辑。 */
-export function flowchartOrderPeers(graph: FlowGraph, id: string): string[] {
+/** 共同入口决定分支集合，额外的连线可以保留；入口到各分支仍需独立分行。 */
+function nodeOrderBranches(graph: FlowGraph, id: string, required: string[] = []) {
   const node = graph.nodeById.get(id)
-  const incoming = graph.edges.filter(edge => edge.target === id)
-  if (!node || graph.subgraphs.some(group => group.id === id) || incoming.length !== 1) return []
-  const parent = incoming[0].source
-  if (graph.subgraphs.some(group => group.id === parent)) return []
-  return graph.edges.filter(edge => {
-    const target = graph.nodeById.get(edge.target)
-    const statements = graph.statements.get(edge.lineIndex)
-    const stmt = statements?.[0]
-    return edge.source === parent && target?.subgraph === node.subgraph && target.id !== parent &&
-      !graph.subgraphs.some(group => group.id === target.id) &&
-      graph.edges.filter(other => other.target === edge.target).length === 1 &&
-      statements?.length === 1 && stmt?.kind === 'chain' && stmt.groups.length === 2 &&
-      stmt.groups.every(refs => refs.length === 1)
-  }).map(edge => edge.target)
+  if (!node || graph.subgraphs.some(group => group.id === id)) return null
+  const group = nodeGroup(graph, node)
+  const parents = new Set(graph.edges.filter(edge => edge.target === id).map(edge => edge.source))
+  return [...parents].filter(parent => !graph.subgraphs.some(group => group.id === parent)).map(parent => ({ parent,
+    edges: graph.edges.filter(edge => {
+      const target = graph.nodeById.get(edge.target), statements = graph.statements.get(edge.lineIndex), stmt = statements?.[0]
+      return edge.source === parent && !!target && nodeGroup(graph, target) === group && target.id !== parent &&
+        !graph.subgraphs.some(group => group.id === target.id) &&
+        graph.edges.filter(other => other.source === parent && other.target === edge.target).length === 1 &&
+        statements?.length === 1 && stmt?.kind === 'chain' && stmt.groups.length === 2 && stmt.groups.every(refs => refs.length === 1)
+    }),
+  })).filter(candidate => candidate.edges.some(edge => edge.target === id) && required.every(id => candidate.edges.some(edge => edge.target === id)))
+    .sort((a, b) => b.edges.length - a.edges.length)[0] ?? null
+}
+
+/** 并列节点可以有额外入口；是否仍在同一层，由画布上的真实排版另行确认。 */
+export function flowchartOrderPeers(graph: FlowGraph, id: string): string[] {
+  return nodeOrderBranches(graph, id)?.edges.map(edge => edge.target) ?? []
 }
 
 /** 交换分支连线的整行，保持文字、线型和注释，并把按序号指定的边样式一起迁移。 */
 function reorderNodes(ctx: FlowOpContext, ids: string[]): OpResult | null {
   if (ids.length < 2 || new Set(ids).size !== ids.length) return null
-  const peers = flowchartOrderPeers(ctx.graph, ids[0])
-  if (!ids.every(id => peers.includes(id))) return null
-  const edges = ids.map(id => ctx.graph.edges.find(edge => edge.target === id)!)
+  const branches = nodeOrderBranches(ctx.graph, ids[0], ids)
+  if (!branches) return null
+  const edges = ids.map(id => branches.edges.find(edge => edge.target === id)!)
   const slots = [...edges].sort((a, b) => a.lineIndex - b.lineIndex)
   if (edges.some(edge => {
     const stmt = ctx.graph.statements.get(edge.lineIndex)![0]
@@ -474,12 +478,27 @@ function reorderNodes(ctx: FlowOpContext, ids: string[]): OpResult | null {
   })) return null
   const edits = slots.map((slot, index) => ({ ...lineBody(ctx.lines[slot.lineIndex]),
     text: slice(ctx, lineBody(ctx.lines[edges[index].lineIndex])) }))
+  // 复杂连接会让布局引擎优先采用节点首次声明的顺序，不能只交换入口连线。
+  // 只搬运独立、唯一的定义；内联或重复定义继续沿用连线提示，不拆写用户的语句。
+  const declarations = ids.map(id => {
+    const node = ctx.graph.nodeById.get(id)!
+    const definitions = node.refs.filter(site => site.ref.shape || site.ref.attrsRaw || site.ref.classNames.length)
+    if (definitions.length !== 1) return null
+    const site = definitions[0], statements = ctx.graph.statements.get(site.lineIndex), stmt = statements?.[0]
+    return statements?.length === 1 && stmt?.kind === 'chain' && stmt.edges.length === 0 &&
+      stmt.groups.length === 1 && stmt.groups[0].length === 1 && stmt.span.end <= lineBody(ctx.lines[site.lineIndex]).end
+      ? { ...lineBody(ctx.lines[site.lineIndex]), lineIndex: site.lineIndex } : null
+  })
+  if (declarations.every(item => item !== null)) {
+    const positions = [...declarations].sort((a, b) => a.lineIndex - b.lineIndex)
+    positions.forEach((slot, index) => edits.push({ start: slot.start, end: slot.end, text: slice(ctx, declarations[index]) }))
+  }
   const code = applyEdits(ctx.code, edits).text
   const lines = scanLines(code), { headerIndex } = classifyLines(lines)
   const graph = buildFlowGraph(lines, headerIndex)
   // 重排不能改变业务连接、节点文字、形状或分组归属，尤其不能改变重复声明的最终含义。
   const nodes = (value: FlowGraph) => JSON.stringify(value.nodes.map(node =>
-    [node.id, node.label, node.shape, node.subgraph, node.classes]).sort((a, b) => String(a[0]).localeCompare(String(b[0]))))
+    [node.id, node.label, node.shape, node.primary?.ref.attrsRaw, node.subgraph, nodeGroup(value, node), node.classes]).sort((a, b) => String(a[0]).localeCompare(String(b[0]))))
   if (nodes(ctx.graph) !== nodes(graph)) return null
   const styles = statementEdits({ code, lines, graph }, renumberLinkStyles({ code, lines, graph }, orderPermutation(ctx.graph.edges, code)))
   const result = diffText(ctx.code, applyEdits(code, styles).text)

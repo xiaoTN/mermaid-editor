@@ -85,7 +85,7 @@ export default {
   'group.moveInto': '移入「{name}」',
   'group.orderEarlier': '整组前移',
   'group.orderLater': '整组后移',
-  'preview.unsupported': '排序支持同组、同层、同一入口下的并列节点，且分支连线要分行书写。',
+  'preview.unsupported': '排序支持同组、同层且有共同入口的并列节点，可以保留其他连线；入口到分支的连线需分行书写。',
   'preview.loading': '正在计算新排版，请稍停片刻，等预览完成。',
   'preview.ready': '预览已准备好，松手应用；按 Esc 取消。',
   'preview.keyboardReady': '预览已准备好，点击“应用排版”或取消。',
