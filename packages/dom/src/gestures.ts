@@ -188,6 +188,9 @@ export class FlowchartGestures {
 
   private clearPorts() { this.ports.replaceChildren(); this.hint.textContent = ''; this.hovered = null }
 
+  /** 点击空白处时一并收起连接点和提示，不保留上一个悬停节点。 */
+  dismiss() { this.cancel(); this.clearPorts() }
+
   update() {
     this.ends.replaceChildren()
     if (this.readonly() || !this.editor.result.flowchart) { this.cancel(); this.clearPorts(); return }

@@ -337,15 +337,25 @@ export class MermaidCanvasView {
     this.container.addEventListener('keydown', keydown)
     this.disposers.push(() => this.container.removeEventListener('keydown', keydown))
 
-    // 点击画布外关闭浮层；依赖选区的工具栏控件仍可使用当前选择。
+    // 点击实体和编辑控件以外的地方关闭浮层，包含 SVG 外仍属于画布的空白区域。
     const docPointerDown = (e: PointerEvent) => {
       const target = e.target as Node | null
-      if (!target || this.container.contains(target)) return
+      if (!target) return
+      const inside = this.container.contains(target)
+      const element = target instanceof Element ? target : target.parentElement
+      if (inside && element) {
+        if (element.closest('.mw-popover, .mw-popover-panel, .mw-ports, .mw-endpoints, .mw-new-node-menu, .mw-drag-preview, input, textarea, select, [contenteditable="true"]')) return
+        if (this.svg?.contains(element) && element.closest('[data-mw-entity], [data-mw-ambiguous]')) return
+      }
       this.inPlaceSession?.finish?.(true)
       // 覆盖层编辑器会通过自己的失焦事件提交。
       this.clearLifelineUi()
+      this.gestures.dismiss()
       this.popover.hide()
-      if (this.editor.selection.length && !options.selectionControls?.some(control => control.contains(target))) {
+      // 追加框选先保留原选区，分组等外部工具也需要沿用当前选择。
+      const appendSelection = inside && this.svgHost.contains(target) &&
+        (e.shiftKey || e.metaKey || e.ctrlKey || this.tool === 'box-select')
+      if (this.editor.selection.length && !appendSelection && !options.selectionControls?.some(control => control.contains(target))) {
         this.editor.clearSelection('canvas')
       }
     }
