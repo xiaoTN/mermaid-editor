@@ -34,6 +34,7 @@ const bounds = () => {
   }
 }
 beforeEach(async () => {
+  vi.useFakeTimers()
   vi.stubGlobal('CSS', { escape: (s: string) => s.replace(/[^\w-]/g, c => `\\${c}`) })
   editor = new MermaidWysiwygEditor({ code: CODE })
   host = document.createElement('div'); document.body.append(host)
@@ -43,12 +44,17 @@ beforeEach(async () => {
 afterEach(() => {
   view.destroy(); host.remove(); vi.restoreAllMocks(); vi.unstubAllGlobals(); setLocale('zh-CN')
   Reflect.deleteProperty(document, 'elementFromPoint')
+  vi.useRealTimers()
 })
+const previewReady = async () => {
+  await vi.advanceTimersByTimeAsync(140)
+  expect(host.querySelector<HTMLElement>('.mw-drag-preview')?.dataset.state).toBe('ready')
+}
 
 describe.each(['zh-CN', 'en'] as const)('%s 拖动节点调整分组', locale => {
   beforeEach(() => setLocale(locale))
   it.each([['A', 'second', 400, 120], ['B', 'second', 400, 120], ['C', 'first', 140, 150], ['B', 'child', 400, 200]] as const)(
-    '%s 可以直接拖入 %s，预览高亮目标，支持一次撤销', (id, group, x, y) => {
+    '%s 可以直接拖入 %s，预览高亮目标，支持一次撤销', async (id, group, x, y) => {
     editor.setSelection([`node:${id}`], 'canvas')
     const source = entity(`node:${id}`), target = entity(`subgraph:${group}`)
     start(id); aim(target.querySelector('rect'), x, y)
@@ -56,7 +62,8 @@ describe.each(['zh-CN', 'en'] as const)('%s 拖动节点调整分组', locale =>
     expect(source.getAttribute('transform')).not.toBe('translate(10 20)')
     expect(target.classList.contains('mw-group-drop-target')).toBe(true)
     expect(host.classList.contains('mw-panning')).toBe(false)
-    expect(host.querySelector('.mw-connect-hint')?.textContent).toBe(t('drag.moveInto', { name: group === 'first' ? '第一组' : group === 'second' ? '第二组' : '内层组' }))
+    expect(host.querySelector('.mw-connect-hint')?.textContent).toBe(t('preview.dragHint'))
+    await previewReady()
     pointer(document, 'pointerup', x, y)
     expect(source.getAttribute('transform')).toBe('translate(10 20)')
     expect(source.classList.contains('mw-node-moving')).toBe(false)
@@ -69,21 +76,23 @@ describe.each(['zh-CN', 'en'] as const)('%s 拖动节点调整分组', locale =>
 
   it('松在目标分组内部节点上也移入该组，拖放后的 click 不改选其他节点', async () => {
     start('B'); aim(entity('node:C').querySelector('text'), 400, 120)
+    await previewReady()
     pointer(document, 'pointerup', 400, 120)
     pointer(entity('node:C'), 'click', 400, 120)
     expect(editor.result.flowchart!.nodeById.get('B')?.subgraph).toBe('second')
     expect(editor.selection).toEqual(['node:B'])
-    await new Promise(resolve => setTimeout(resolve, 0))
+    await vi.advanceTimersByTimeAsync(1)
     pointer(entity('node:C'), 'click', 400, 120)
     expect(editor.selection).toEqual(['node:C'])
   })
 
-  it('拖到空白处可移出分组，同组拖放不增加历史', () => {
+  it('拖到空白处可移出分组，同组拖放不增加历史', async () => {
     start('C'); aim(entity('subgraph:second').querySelector('rect'), 400, 120)
     pointer(document, 'pointerup', 400, 120)
     expect(editor.code).toBe(CODE); expect(editor.canUndo).toBe(false)
     start('C'); aim(host.querySelector('svg'), 40, 320)
-    expect(host.querySelector('.mw-connect-hint')?.textContent).toBe(t('drag.moveOut'))
+    expect(host.querySelector('.mw-connect-hint')?.textContent).toBe(t('preview.dragHint'))
+    await previewReady()
     pointer(document, 'pointerup', 40, 320)
     expect(editor.result.flowchart!.nodeById.get('C')?.subgraph).toBeNull()
     editor.undo(); expect(editor.code).toBe(CODE)

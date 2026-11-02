@@ -7,6 +7,7 @@ export type FlowchartOp =
   | { type: 'addNode'; shape?: ShapeId; label?: string; id?: string; subgraph?: string }
   | { type: 'addSubgraph'; title: string; nodeIds?: string[] }
   | { type: 'moveNodeToSubgraph'; id: string; subgraph: string | null }
+  | { type: 'reorderNodes'; ids: string[] }
   | { type: 'connect'; source: string; target: string; line?: EdgeLine; arrowEnd?: EdgeArrow; label?: string; insideGroup?: boolean }
   | { type: 'renameNode'; id: string; label: string }
   | { type: 'setNodeShape'; id: string; shape: ShapeId }
@@ -439,6 +440,50 @@ function orderPermutation(before: FlowEdge[], afterCode: string): (index: number
   return (index) => permutation.get(index) ?? null
 }
 
+/** 只开放同一分组、同一入口下的独立分支，链式或合并写法继续通过源码编辑。 */
+export function flowchartOrderPeers(graph: FlowGraph, id: string): string[] {
+  const node = graph.nodeById.get(id)
+  const incoming = graph.edges.filter(edge => edge.target === id)
+  if (!node || graph.subgraphs.some(group => group.id === id) || incoming.length !== 1) return []
+  const parent = incoming[0].source
+  if (graph.subgraphs.some(group => group.id === parent)) return []
+  return graph.edges.filter(edge => {
+    const target = graph.nodeById.get(edge.target)
+    const statements = graph.statements.get(edge.lineIndex)
+    const stmt = statements?.[0]
+    return edge.source === parent && target?.subgraph === node.subgraph && target.id !== parent &&
+      !graph.subgraphs.some(group => group.id === target.id) &&
+      graph.edges.filter(other => other.target === edge.target).length === 1 &&
+      statements?.length === 1 && stmt?.kind === 'chain' && stmt.groups.length === 2 &&
+      stmt.groups.every(refs => refs.length === 1)
+  }).map(edge => edge.target)
+}
+
+/** 交换分支连线的整行，保持文字、线型和注释，并把按序号指定的边样式一起迁移。 */
+function reorderNodes(ctx: FlowOpContext, ids: string[]): OpResult | null {
+  if (ids.length < 2 || new Set(ids).size !== ids.length) return null
+  const peers = flowchartOrderPeers(ctx.graph, ids[0])
+  if (!ids.every(id => peers.includes(id))) return null
+  const edges = ids.map(id => ctx.graph.edges.find(edge => edge.target === id)!)
+  const slots = [...edges].sort((a, b) => a.lineIndex - b.lineIndex)
+  if (edges.some(edge => {
+    const stmt = ctx.graph.statements.get(edge.lineIndex)![0]
+    return stmt.span.end > lineBody(ctx.lines[edge.lineIndex]).end
+  })) return null
+  const edits = slots.map((slot, index) => ({ ...lineBody(ctx.lines[slot.lineIndex]),
+    text: slice(ctx, lineBody(ctx.lines[edges[index].lineIndex])) }))
+  const code = applyEdits(ctx.code, edits).text
+  const lines = scanLines(code), { headerIndex } = classifyLines(lines)
+  const graph = buildFlowGraph(lines, headerIndex)
+  // 重排不能改变业务连接、节点文字、形状或分组归属，尤其不能改变重复声明的最终含义。
+  const nodes = (value: FlowGraph) => JSON.stringify(value.nodes.map(node =>
+    [node.id, node.label, node.shape, node.subgraph, node.classes]).sort((a, b) => String(a[0]).localeCompare(String(b[0]))))
+  if (nodes(ctx.graph) !== nodes(graph)) return null
+  const styles = statementEdits({ code, lines, graph }, renumberLinkStyles({ code, lines, graph }, orderPermutation(ctx.graph.edges, code)))
+  const result = diffText(ctx.code, applyEdits(code, styles).text)
+  return { edits: result ? [result] : [] }
+}
+
 /** Reparse the structural edits, then compile styles in the original coordinates. */
 function structuralEdits(ctx: FlowOpContext, before: FlowEdge[], changes: StatementChanges, extra: TextEdit[] = [], dropComments = false): TextEdit[] {
   const afterCode = applyEdits(ctx.code, [...extra, ...statementEdits(ctx, changes, dropComments)]).text
@@ -608,6 +653,8 @@ export function compileFlowchartOp(ctx: FlowOpContext, op: FlowchartOp): OpResul
   const { graph } = ctx
 
   switch (op.type) {
+    case 'reorderNodes':
+      return reorderNodes(ctx, op.ids)
     case 'moveNodeToSubgraph':
       return moveNodeToSubgraph(ctx, op.id, op.subgraph)
     case 'addSubgraph': {

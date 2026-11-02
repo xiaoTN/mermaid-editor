@@ -1,5 +1,6 @@
 import { t, onLocaleChange } from './i18n'
 import { MermaidWysiwygEditor, diffText, type EditorNotice } from '@inkeep/mermaid-wysiwyg-core'
+import type { NodeMovePreview } from './nodeMovePreview'
 
 /** 优先命中内部节点；分组自身的标题、边框和空白也可作为端点。 */
 export function flowchartEndpoint(host: HTMLElement, hit: Element | null): Element | null {
@@ -44,7 +45,7 @@ export class FlowchartGestures {
   constructor(private editor: MermaidWysiwygEditor, private host: HTMLElement,
     private readonly: () => boolean, private refresh: () => void, private notify: (notices: EditorNotice[]) => void,
     private canMoveNode: () => boolean = () => true, private onNodeMove: () => void = () => {},
-    private onNodeCreated: (entityId: string) => void = () => {}) {
+    private onNodeCreated: (entityId: string) => void = () => {}, private nodePreview?: NodeMovePreview) {
     this.ports.className = 'mw-ports'
     this.ends.className = 'mw-endpoints'
     this.hint.className = 'mw-connect-hint'
@@ -100,6 +101,7 @@ export class FlowchartGestures {
     e.preventDefault()
     if (!drag.active) {
       drag.active = true; this.clearPorts(); this.ends.replaceChildren(); this.onNodeMove()
+      this.nodePreview?.begin(drag.id, drag.svg)
       drag.node.classList.add('mw-node-moving')
       try { drag.svg.setPointerCapture?.(e.pointerId) } catch { /* 合成指针事件可能不支持捕获。 */ }
     }
@@ -126,6 +128,10 @@ export class FlowchartGestures {
     drag.target?.classList.add('mw-group-drop-target')
     const title = this.editor.result.flowchart?.subgraphs.find(group => group.id === drag.group)?.title ?? drag.group ?? ''
     this.hint.textContent = !drag.valid ? t('drag.moveCancel') : drag.group ? t('drag.moveInto', { name: title }) : t('drag.moveOut')
+    if (this.nodePreview) {
+      this.nodePreview.move(drag.group, drag.valid, e.clientX, e.clientY)
+      this.hint.textContent = drag.valid ? t('preview.dragHint') : t('drag.moveCancel')
+    }
     const box = this.host.getBoundingClientRect()
     this.hint.style.left = `${e.clientX - box.left + this.host.scrollLeft + 12}px`
     this.hint.style.top = `${e.clientY - box.top + this.host.scrollTop + 12}px`
@@ -136,13 +142,14 @@ export class FlowchartGestures {
     if (!drag || e.pointerId !== drag.pointerId) return
     if (drag.active) this.moveNode(e)
     const commit = this.nodeMove === drag && drag.active && drag.valid && drag.code === this.editor.code && !this.readonly()
+    const previewHandled = commit && this.nodePreview?.drop()
     this.cancel()
     if (!drag.active) return
     // 拖放后的 click 不能再次选中落点内的其他节点，也不影响下一次正常点击。
     this.blockNodeClick = true
     if (this.clickTimer) clearTimeout(this.clickTimer)
     this.clickTimer = setTimeout(() => { this.blockNodeClick = false; this.clickTimer = null }, 0)
-    if (commit) this.editor.dispatch({ type: 'moveNodeToSubgraph', id: drag.id, subgraph: drag.group })
+    if (commit && !previewHandled) this.editor.dispatch({ type: 'moveNodeToSubgraph', id: drag.id, subgraph: drag.group })
     this.refresh()
   }
 
@@ -305,6 +312,7 @@ export class FlowchartGestures {
   }
 
   cancel() {
+    this.nodePreview?.cancel()
     if (this.nodeMove) {
       const { node, svg, pointerId, transform, target } = this.nodeMove
       node.classList.remove('mw-node-moving'); target?.classList.remove('mw-group-drop-target')

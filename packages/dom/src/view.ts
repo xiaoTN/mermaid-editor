@@ -2,6 +2,7 @@ import { mountNotices, NOTICE_CSS } from './notices'
 import { mountBoxSelection, BOX_SELECTION_CSS } from './boxSelection'
 import { t, onLocaleChange } from './i18n'
 import { FlowchartGestures, flowchartEndpoint, GESTURE_CSS } from './gestures'
+import { NodeMovePreview, NODE_MOVE_PREVIEW_CSS } from './nodeMovePreview'
 import {
   MermaidWysiwygEditor,
   mermaidSource,
@@ -40,7 +41,7 @@ export const COLOR_PALETTE = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#06b6
 
 export interface MermaidLike {
   initialize(config: Record<string, unknown>): void
-  render(id: string, code: string): Promise<{ svg: string; bindFunctions?: (el: Element) => void }>
+  render(id: string, code: string, container?: Element): Promise<{ svg: string; bindFunctions?: (el: Element) => void }>
   parse(code: string, options?: Record<string, unknown>): Promise<unknown>
 }
 
@@ -230,6 +231,7 @@ export class MermaidCanvasView {
   private listeners = new Map<keyof ViewEventMap, Set<(p: never) => void>>()
   private notices: ReturnType<typeof mountNotices>
   private gestures: FlowchartGestures
+  private nodePreview: NodeMovePreview
   private connectSource: string | null = null
   private suppressNextClick = false
   private ghostPath: SVGLineElement | null = null
@@ -284,7 +286,7 @@ export class MermaidCanvasView {
     if (!styleInjected) {
       const style = document.createElement('style')
       style.setAttribute('data-mw', '')
-      style.textContent = BASE_CSS + POPOVER_CSS + GESTURE_CSS + NOTICE_CSS + BOX_SELECTION_CSS
+      style.textContent = BASE_CSS + POPOVER_CSS + GESTURE_CSS + NOTICE_CSS + BOX_SELECTION_CSS + NODE_MOVE_PREVIEW_CSS
       document.head.appendChild(style)
       styleInjected = true
     }
@@ -303,9 +305,11 @@ export class MermaidCanvasView {
     this.container.append(this.svgHost, this.overlayHost, this.errorBadge)
     this.popover = new Popover(this.overlayHost)
     this.notices = mountNotices(this.container, this.editor, () => this.readOnly, options.hintContainer)
+    this.nodePreview = new NodeMovePreview(this.editor, this.container, this.mermaid, () => this.svg,
+      () => this.readOnly, notices => this.notices.show(notices))
     this.gestures = new FlowchartGestures(this.editor, this.container, () => this.readOnly || this.tool === 'box-select', () => this.updatePopover(), notices => this.notices.show(notices),
       () => this.tool === 'select' && !this.inlineInput && !this.inPlaceSession, () => this.popover.hide(),
-      entityId => { this.pendingEditEntity = entityId })
+      entityId => { this.pendingEditEntity = entityId }, this.nodePreview)
 
     this.mermaid.initialize(this.mermaidConfig)
 
@@ -377,6 +381,7 @@ export class MermaidCanvasView {
   }
 
   setTool(tool: Tool) {
+    this.gestures.cancel()
     this.boxSelection?.cancel()
     this.tool = tool
     this.container.classList.toggle('mw-tool-connect', tool === 'connect')
@@ -387,6 +392,7 @@ export class MermaidCanvasView {
   }
 
   setReadOnly(readOnly: boolean) {
+    this.gestures.cancel()
     this.boxSelection?.cancel()
     this.requestedReadOnly = readOnly
     this.notices.update()
@@ -1481,6 +1487,12 @@ export class MermaidCanvasView {
 
   private onKeyDown(e: KeyboardEvent) {
     if (this.readOnly) return
+    // 预览按钮使用原生键盘行为，不能把 Enter 或 Delete 当成画布上的改字、删除操作。
+    if ((e.target as Element)?.closest('.mw-drag-preview')) {
+      if (e.key === 'Escape') { e.preventDefault(); this.nodePreview.cancel(); this.container.focus({ preventScroll: true }) }
+      return
+    }
+    if (e.key !== 'Escape' && (e.target as Element)?.closest('button')) return
     if (this.inlineInput || this.inPlaceSession || e.isComposing ||
       (e.target as Element)?.closest('input, textarea, select, [contenteditable="true"]')) return
     const mod = e.metaKey || e.ctrlKey
@@ -1669,6 +1681,10 @@ export class MermaidCanvasView {
           onClick: () => this.editor.dispatch({ type: 'duplicateNode', id: node.id }),
         },
         rename,
+        ...([-1, 1] as const).filter(step => this.nodePreview.canNudge(node.id, step)).map(step => ({
+          glyph: step < 0 ? '←' : '→', title: t(step < 0 ? 'ui.orderEarlier' : 'ui.orderLater'),
+          onClick: () => this.nodePreview.nudge(node.id, step),
+        })),
         del,
       ]
     }
@@ -2259,6 +2275,7 @@ export class MermaidCanvasView {
       this.popoverFollowRaf = 0
     }
     this.gestures.destroy()
+    this.nodePreview.destroy()
     this.notices.destroy()
     if (this.renderTimer) clearTimeout(this.renderTimer)
     if (this.lifelineClearTimer) clearTimeout(this.lifelineClearTimer)

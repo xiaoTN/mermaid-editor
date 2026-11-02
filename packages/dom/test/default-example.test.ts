@@ -3,12 +3,14 @@ import { afterAll, beforeAll, expect, it, vi } from 'vitest'
 import { DEFAULT_EXAMPLE } from '../../../apps/playground/src/defaultExample'
 import { MermaidWysiwygEditor, type FlowchartOp } from '@inkeep/mermaid-wysiwyg-core'
 import { correlateFlowchart } from '../src/correlate'
+import { MermaidCanvasView, t } from '../src'
 
 let mermaid: typeof import('../../../apps/playground/node_modules/mermaid')['default']
 let serial = 0
 
 beforeAll(async () => {
   vi.stubGlobal('CSSStyleSheet', window.CSSStyleSheet)
+  vi.stubGlobal('CSS', { escape: (text: string) => text.replace(/[^\w-]/g, value => `\\${value}`) })
   // jsdom 不测量 SVG 文字，提供尺寸后仍使用真实 Mermaid 排版和渲染。
   Object.defineProperty(SVGElement.prototype, 'getBBox', { configurable: true, value() {
     return { x: 0, y: 0, width: Math.max(10, (this.textContent ?? '').length * 8), height: 20 }
@@ -86,5 +88,62 @@ it('默认示例的改字、样式、端点和跨组移动可以继续渲染，�
     expect(editor.dispatch(operation)?.edits.length, operation.type).toBeGreaterThan(0)
     await checkCanvas(editor)
     editor.undo(); expect(editor.code).toBe(DEFAULT_EXAMPLE)
+  }
+})
+
+it('真实 Mermaid 拖动分支时先显示新布局，松手后才回写源码并支持一次撤销', async () => {
+  const code = 'flowchart TD\n A[入口]\n B[乙]\n C[丙]\n A --> B\n A --> C\n'
+  const editor = new MermaidWysiwygEditor({ code })
+  const host = document.createElement('div'); document.body.append(host)
+  const bounds = vi.spyOn(SVGElement.prototype, 'getBoundingClientRect').mockImplementation(function () {
+    const match = /translate\(([-\d.]+)[, ]+([-\d.]+)\)/.exec(this.getAttribute('transform') ?? '')
+    const x = match ? Number(match[1]) : 0, y = match ? Number(match[2]) : 0
+    return { left: x - 20, right: x + 20, top: y - 10, bottom: y + 10,
+      x: x - 20, y: y - 10, width: 40, height: 20, toJSON() {} }
+  })
+  const view = new MermaidCanvasView({ editor, container: host, mermaid, debounceMs: 10000 })
+  const pointer = (target: EventTarget, type: string, x: number, y: number) => {
+    const event = new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, clientX: x, clientY: y })
+    Object.defineProperty(event, 'pointerId', { value: 1 }); target.dispatchEvent(event)
+  }
+  try {
+    await view.render()
+    const source = host.querySelector<SVGGElement>('[data-mw-entity="node:C"]')!
+    const peer = host.querySelector<SVGGElement>('[data-mw-entity="node:B"]')!
+    const from = source.getBoundingClientRect(), to = peer.getBoundingClientRect()
+    Object.defineProperty(document, 'elementFromPoint', { configurable: true, value: () => host.querySelector('svg') })
+    pointer(source, 'pointerdown', from.x + 20, from.y + 10)
+    pointer(document, 'pointermove', to.x - 10, to.y + 10)
+    await vi.waitFor(() => expect(host.querySelector<HTMLElement>('.mw-drag-preview')?.dataset.state).toBe('ready'))
+    expect(host.querySelector('.mw-drag-preview')?.textContent).toContain(t('preview.ready'))
+    expect(editor.code).toBe(code); expect(editor.canUndo).toBe(false)
+    pointer(document, 'pointerup', to.x - 10, to.y + 10)
+    expect(editor.result.flowchart!.edges.map(edge => edge.target)).toEqual(['C', 'B'])
+    await view.render(); expect(view.renderError).toBeNull()
+    editor.undo(); expect(editor.code).toBe(code); expect(editor.canUndo).toBe(false)
+    await view.render()
+    // 拖放产生的同一轮 click 会被拦截；下一次真实点击发生在下一个事件循环。
+    await new Promise(resolve => setTimeout(resolve, 0))
+    editor.setSelection(['node:C'], 'canvas')
+    const earlier = host.querySelector<HTMLButtonElement>(`button[aria-label="${t('ui.orderEarlier')}"]`)!
+    const enterMenu = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
+    earlier.dispatchEvent(enterMenu)
+    expect(enterMenu.defaultPrevented).toBe(false)
+    earlier.click()
+    await vi.waitFor(() => {
+      const panel = host.querySelector<HTMLElement>('.mw-drag-preview')!
+      expect(panel.hidden).toBe(false)
+      expect(panel.dataset.state).toBe('ready')
+    })
+    const apply = host.querySelector<HTMLButtonElement>(`button[aria-label="${t('preview.apply')}"]`)!
+    const enterApply = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
+    apply.dispatchEvent(enterApply)
+    expect(enterApply.defaultPrevented).toBe(false)
+    expect(host.querySelector('[contenteditable="true"]')).toBeNull()
+    apply.click()
+    expect(editor.result.flowchart!.edges.map(edge => edge.target)).toEqual(['C', 'B'])
+    editor.undo(); expect(editor.code).toBe(code)
+  } finally {
+    view.destroy(); host.remove(); bounds.mockRestore(); Reflect.deleteProperty(document, 'elementFromPoint')
   }
 })
