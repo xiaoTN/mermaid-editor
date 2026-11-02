@@ -1,6 +1,7 @@
 import { t, onLocaleChange } from './i18n'
 import { MermaidWysiwygEditor, diffText, flowchartSubgraphContains, type EditorNotice } from '@inkeep/mermaid-wysiwyg-core'
 import type { NodeMovePreview } from './nodeMovePreview'
+import { DragEdges } from './dragEdges'
 
 /** 优先命中内部节点；分组自身的标题、边框和空白也可作为端点。 */
 export function flowchartEndpoint(host: HTMLElement, hit: Element | null): Element | null {
@@ -21,6 +22,8 @@ interface NodeMove {
   y: number
   pointerId: number
   elements: { node: SVGGraphicsElement; transform: string | null }[]
+  moving: Set<string>
+  edges: DragEdges | null
   isGroup: boolean
   code: string
   active: boolean
@@ -85,21 +88,20 @@ export class FlowchartGestures {
     const id = endpointId(node), graph = this.editor.result.flowchart!
     const isGroup = node.getAttribute('data-mw-entity')!.startsWith('subgraph:')
     const entities = new Set([node.getAttribute('data-mw-entity')!])
+    const moving = new Set([id])
     if (isGroup) {
       for (const item of [...graph.nodes, ...graph.subgraphs]) {
-        if (flowchartSubgraphContains(graph, id, item.id)) entities.add(item.entityId)
-      }
-      for (const edge of graph.edges) {
-        if (flowchartSubgraphContains(graph, id, edge.source) && flowchartSubgraphContains(graph, id, edge.target)) entities.add(edge.entityId)
+        if (flowchartSubgraphContains(graph, id, item.id)) { entities.add(item.entityId); moving.add(item.id) }
       }
     }
+    for (const edge of graph.edges) if (moving.has(edge.source) && moving.has(edge.target)) entities.add(edge.entityId)
     const elements = [...node.ownerSVGElement.querySelectorAll<SVGGraphicsElement>('[data-mw-entity]')]
       .filter(element => entities.has(element.getAttribute('data-mw-entity')!))
     // 有些渲染器把成员放进分组元素里，只移动最外层，避免子元素被重复平移。
     const roots = elements.filter(element => !elements.some(parent => parent !== element && parent.contains(element)))
     this.nodeMove = { node, svg: node.ownerSVGElement, id: endpointId(node), x: e.clientX, y: e.clientY,
       pointerId: e.pointerId, elements: roots.map(node => ({ node, transform: node.getAttribute('transform') })), isGroup, code: this.editor.code,
-      active: false, valid: false, group: null, target: null }
+      moving, edges: null, active: false, valid: false, group: null, target: null }
   }
 
   private moveNode(e: PointerEvent) {
@@ -112,6 +114,7 @@ export class FlowchartGestures {
     if (!drag.active) {
       drag.active = true; this.clearPorts(); this.ends.replaceChildren(); this.onNodeMove()
       this.nodePreview?.begin(drag.id, drag.svg)
+      drag.edges = new DragEdges(drag.svg, this.editor.result.flowchart!, drag.moving, drag.elements.map(item => item.node))
       drag.elements.forEach(({ node }) => node.classList.add('mw-node-moving'))
       try { drag.svg.setPointerCapture?.(e.pointerId) } catch { /* 合成指针事件可能不支持捕获。 */ }
     }
@@ -126,6 +129,7 @@ export class FlowchartGestures {
       }
       node.setAttribute('transform', `translate(${offsetX},${offsetY}) ${transform ?? ''}`)
     }
+    drag.edges?.move(dx, dy)
     drag.target?.classList.remove('mw-group-drop-target')
     const hit = document.elementFromPoint(e.clientX, e.clientY)
     drag.valid = this.canvasHit(hit)
@@ -324,6 +328,7 @@ export class FlowchartGestures {
     this.nodePreview?.cancel()
     if (this.nodeMove) {
       const { elements, svg, pointerId, target } = this.nodeMove
+      this.nodeMove.edges?.restore()
       target?.classList.remove('mw-group-drop-target')
       for (const { node, transform } of elements) {
         node.classList.remove('mw-node-moving')
