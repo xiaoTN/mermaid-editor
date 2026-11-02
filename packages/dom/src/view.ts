@@ -350,7 +350,7 @@ export class MermaidCanvasView {
       const element = target instanceof Element ? target : target.parentElement
       if (inside && element) {
         if (this.nodePreview.active && element.closest('.mw-zoom-controls')) return
-        if (element.closest('.mw-popover, .mw-popover-panel, .mw-ports, .mw-endpoints, .mw-new-node-menu, .mw-drag-preview, input, textarea, select, [contenteditable="true"]')) return
+        if (element.closest('.mw-popover, .mw-popover-panel, .mw-ports, .mw-endpoints, .mw-drag-preview, input, textarea, select, [contenteditable="true"]')) return
         if (this.svg?.contains(element) && element.closest('[data-mw-entity], [data-mw-ambiguous]')) return
       }
       this.inPlaceSession?.finish?.(true)

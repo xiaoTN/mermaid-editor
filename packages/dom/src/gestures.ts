@@ -73,13 +73,7 @@ export class FlowchartGestures {
     listen(document, 'keydown', (e: KeyboardEvent) => { if (e.key === 'Escape') { this.cancel(); this.update() } })
     listen(host, 'scroll', () => this.update())
     listen(window, 'resize', () => this.update())
-    this.disposers.push(onLocaleChange(() => {
-      this.update()
-      const button = this.host.querySelector('.mw-new-node-menu button')
-      if (button) { button.textContent = t('drag.newNode'); button.setAttribute('aria-label', t('drag.newNode')) }
-      const cancel = this.host.querySelector('.mw-new-node-menu button:last-child')
-      if (cancel) { cancel.textContent = t('menu.cancel'); cancel.setAttribute('aria-label', t('menu.cancel')) }
-    }))
+    this.disposers.push(onLocaleChange(() => this.update()))
     this.disposers.push(editor.on('selectionChange', () => this.update()))
     this.disposers.push(editor.on('change', () => this.cancel()))
   }
@@ -134,8 +128,7 @@ export class FlowchartGestures {
     }
     drag.target?.classList.remove('mw-group-drop-target')
     const hit = document.elementFromPoint(e.clientX, e.clientY)
-    drag.valid = !!hit && this.host.contains(hit) && (drag.svg.contains(hit) || hit === this.host || !!hit.closest('.mw-svg-host')) &&
-      !hit.closest('button, input, [contenteditable="true"], .mw-popover, [data-mw-ambiguous]')
+    drag.valid = this.canvasHit(hit)
     // Mermaid 的成员节点与分组边框不一定是 DOM 父子关系，按边框范围寻找最内层分组。
     const candidates = drag.valid ? [...this.host.querySelectorAll('[data-mw-entity^="subgraph:"]')].flatMap(group => {
       if (drag.isGroup && flowchartSubgraphContains(this.editor.result.flowchart!, drag.id, endpointId(group))) return []
@@ -165,12 +158,16 @@ export class FlowchartGestures {
     const previewHandled = commit && this.nodePreview?.drop()
     this.cancel()
     if (!drag.active) return
-    // 拖放后的 click 不能再次选中落点内的其他节点，也不影响下一次正常点击。
+    this.blockDropClick()
+    if (commit && !previewHandled) this.editor.dispatch({ type: drag.isGroup ? 'moveSubgraph' : 'moveNodeToSubgraph', id: drag.id, subgraph: drag.group })
+    this.refresh()
+  }
+
+  /** 拖放后的点击不能改选落点，也不能关闭刚创建节点的文字编辑。 */
+  private blockDropClick() {
     this.blockNodeClick = true
     if (this.clickTimer) clearTimeout(this.clickTimer)
     this.clickTimer = setTimeout(() => { this.blockNodeClick = false; this.clickTimer = null }, 0)
-    if (commit && !previewHandled) this.editor.dispatch({ type: drag.isGroup ? 'moveSubgraph' : 'moveNodeToSubgraph', id: drag.id, subgraph: drag.group })
-    this.refresh()
   }
 
   private at(el: Element) {
@@ -276,8 +273,9 @@ export class FlowchartGestures {
     } else if (drag.source && target && target !== drag.source) {
       const result = this.editor.dispatch({ type: 'connect', source: drag.source, target, insideGroup: true })
       if (result?.edits.length) this.directionNotice(drag.source, target)
-    } else if (drag.source && !target) {
-      this.newNodeMenu(drag.source, e.clientX, e.clientY)
+    } else if (drag.source && !target && Math.hypot(e.clientX - drag.x, e.clientY - drag.y) >= 5 &&
+      this.canvasHit(document.elementFromPoint(e.clientX, e.clientY))) {
+      if (this.createConnectedNode(drag.source)) this.blockDropClick()
     }
     this.refresh()
   }
@@ -299,39 +297,27 @@ export class FlowchartGestures {
     if (notices.length) this.notify(notices)
   }
 
-  private newNodeMenu(source: string, x: number, y: number) {
-    this.host.querySelector('.mw-new-node-menu')?.remove()
-    const menu = document.createElement('div'); menu.className = 'mw-plus-menu mw-new-node-menu'
-    const b = document.createElement('button'); b.textContent = t('drag.newNode'); b.setAttribute('aria-label', t('drag.newNode'))
-    const cancel = document.createElement('button')
-    cancel.type = b.type = 'button'
-    cancel.textContent = t('menu.cancel'); cancel.setAttribute('aria-label', t('menu.cancel'))
-    cancel.onclick = () => menu.remove()
-    menu.append(b, cancel)
-    const h = this.host.getBoundingClientRect()
-    menu.style.left = `${x - h.left + this.host.scrollLeft}px`; menu.style.top = `${y - h.top + this.host.scrollTop}px`
-    menu.addEventListener('pointerdown', e => e.stopPropagation())
-    b.onclick = () => {
-      menu.remove()
-      if (this.readonly()) return
-      // 在临时图上编译两个操作，再将修改合为一次编辑，保证一次撤销。
-      const draft = new MermaidWysiwygEditor({ code: this.editor.code })
-      const node = draft.dispatch({ type: 'addNode', label: t('drag.newNode') })?.created?.[0]?.slice(5)
-      if (!node) return
-      const edge = draft.dispatch({ type: 'connect', source, target: node, insideGroup: true })?.created
-      const edit = diffText(this.editor.code, draft.code)
-      if (edit) this.editor.applyEdits([edit], 'canvas')
-      if (edit) {
-        const entityId = `node:${node}`
-        this.editor.setSelection([entityId], 'canvas')
-        this.onNodeCreated(entityId)
-        if (edge) this.directionNotice(source, node)
-      }
-    }
-    this.host.append(menu)
-    const close = (e: Event) => { if (!menu.contains(e.target as Node)) { menu.remove(); document.removeEventListener('pointerdown', close) } }
-    document.addEventListener('pointerdown', close)
-    this.disposers.push(() => document.removeEventListener('pointerdown', close))
+  /** 画布内的空白可直接落点，控件、无法识别的图形和画布外都不创建节点。 */
+  private canvasHit(hit: Element | null): boolean {
+    return !!hit && this.host.contains(hit) && (hit === this.host || !!hit.closest('.mw-svg-host')) &&
+      !hit.closest('button, input, textarea, select, [contenteditable="true"], .mw-popover, [data-mw-ambiguous]')
+  }
+
+  private createConnectedNode(source: string): boolean {
+    // 在临时图上编译两个操作，再将修改合为一次编辑，保证一次撤销。
+    const draft = new MermaidWysiwygEditor({ code: this.editor.code })
+    const node = draft.dispatch({ type: 'addNode', label: t('drag.newNode') })?.created?.[0]?.slice(5)
+    if (!node) return false
+    const edge = draft.dispatch({ type: 'connect', source, target: node, insideGroup: true })
+    if (!edge?.edits.length) return false
+    const edit = diffText(this.editor.code, draft.code)
+    if (!edit) return false
+    this.editor.applyEdits([edit], 'canvas')
+    const entityId = `node:${node}`
+    this.editor.setSelection([entityId], 'canvas')
+    this.onNodeCreated(entityId)
+    this.directionNotice(source, node)
+    return true
   }
 
   cancel() {
@@ -351,7 +337,7 @@ export class FlowchartGestures {
     this.ends.replaceChildren()
   }
 
-  destroy() { this.cancel(); if (this.clickTimer) clearTimeout(this.clickTimer); this.disposers.forEach(fn => fn()); this.ports.remove(); this.ends.remove(); this.hint.remove(); this.host.querySelector('.mw-new-node-menu')?.remove() }
+  destroy() { this.cancel(); if (this.clickTimer) clearTimeout(this.clickTimer); this.disposers.forEach(fn => fn()); this.ports.remove(); this.ends.remove(); this.hint.remove() }
 }
 
 export const GESTURE_CSS = `
