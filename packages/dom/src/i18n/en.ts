@@ -13,6 +13,9 @@ export default {
 
   'tb.open': "Open",
   'tb.new': "New",
+  'tb.example': "Example",
+  'tb.exampleHint': "Load the feature example; keep the previous draft (undoable)",
+  'toast.exampleLoaded': "Feature example loaded. The previous draft was kept. Undo to restore the previous content.",
   'direction.label': "Direction",
   'direction.change': "Cycle diagram direction",
   'direction.hint': "Current: {current}; click for {next} (whole diagram, undoable)",

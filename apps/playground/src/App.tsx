@@ -174,7 +174,7 @@ export default function App({ fileAccess = desktop ?? browserFiles }: { fileAcce
       setFilename(opened.name); setToast(null)
     } catch (error) { setToast({ key: 'err.open', reason: error instanceof Error ? error.message : String(error) }) }
   }
-  const newDocument = async () => {
+  const newDocument = async (example = false) => {
     const version = ++fileVersion.current
     try {
       // 等待正在进行的文件操作，避免旧文件的保存结果覆盖新文档状态。
@@ -185,17 +185,17 @@ export default function App({ fileAccess = desktop ?? browserFiles }: { fileAcce
       const next = await drafts.open({ code: '', name: t('app.untitled'), untitled: true,
         path: `untitled:${Date.now()}:${version}` }, false)
       if (version !== fileVersion.current) return
-      // 旧文档保留自己的草稿；新建使用独立草稿身份，且清空操作可撤销。
+      // 旧文档保留自己的草稿；空白图和示例都使用独立身份，替换内容可撤销。
       session.current?.edit(editor.code)
       session.current = next; setReady(true)
       observedHash.current = ''
       updateBaseline(''); setOutside(null); setPrompt(null)
       setUntitled(true); setFilename(next.name)
-      editor.setCode('flowchart TD\n', 'api')
+      editor.setCode(example ? DEFAULT_EXAMPLE : 'flowchart TD\n', 'api')
       editor.clearSelection()
       next.edit(editor.code)
       view.current?.fitView()
-      setToast({ key: 'toast.newDocument' })
+      setToast({ key: example ? 'toast.exampleLoaded' : 'toast.newDocument' })
     } catch (error) { setToast({ key: 'err.newDocument', reason: error instanceof Error ? error.message : String(error) }) }
   }
   const performSave = async (saveAs: boolean): Promise<boolean> => {
@@ -278,6 +278,7 @@ export default function App({ fileAccess = desktop ?? browserFiles }: { fileAcce
       </div>
       <div className="file-actions">
         <Button icon="new" title={t('tb.newHint')} onClick={() => void newDocument()}>{t('tb.new')}</Button>
+        <Button icon="diagram" title={t('tb.exampleHint')} onClick={() => void newDocument(true)}>{t('tb.example')}</Button>
         <Button icon="open" onClick={() => native ? void open() : fileInput.current?.click()}>{t('tb.open')}</Button>
         {native && <Button onClick={() => void save(true)}>{t('tb.saveAs')}</Button>}
         <Button icon="save" className="primary" onClick={() => void save()}>{t('tb.save')}</Button>

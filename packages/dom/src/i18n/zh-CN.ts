@@ -15,6 +15,9 @@ export default {
 
   'tb.open': "打开",
   'tb.new': "新建",
+  'tb.example': "示例",
+  'tb.exampleHint': "载入功能测试示例，保留原草稿，可撤销",
+  'toast.exampleLoaded': "已载入功能测试示例，原草稿已保留，可撤销恢复原内容",
   'direction.label': "方向",
   'direction.change': "切换图表方向",
   'direction.hint': "当前：{current}；点击切换为{next}（整张图，可撤销）",

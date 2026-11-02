@@ -5,6 +5,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createHash } from 'node:crypto'
 import App from '../../../apps/playground/src/App'
+import { DEFAULT_EXAMPLE } from '../../../apps/playground/src/defaultExample'
 import { DraftStore } from '../../../apps/playground/src/draft'
 import { DraftNotice } from '../../../apps/playground/src/DraftNotice'
 import { browserFiles, type FileAccess } from '../../../apps/playground/src/files'
@@ -49,7 +50,7 @@ describe('应用线框和文件交互', () => {
     await mount()
     const labels = [...host.querySelectorAll('.toolbar button')].map(b => b.getAttribute('aria-label'))
     expect(labels).toEqual(['撤销', '重做', '框选', '+ 节点', '+ 分组', '切换图表方向'])
-    expect([...host.querySelectorAll('.file-actions button')].map(b => b.getAttribute('aria-label'))).toEqual(['新建', '打开', '保存'])
+    expect([...host.querySelectorAll('.file-actions button')].map(b => b.getAttribute('aria-label'))).toEqual(['新建', '示例', '打开', '保存'])
     expect(host.querySelector('.codepanel [aria-label="复制代码"]')).not.toBeNull()
     expect(host.querySelector('.canvas-footer .sync-status')).not.toBeNull()
     expect(host.querySelector('.brand-name')?.textContent).toBe('Mermaid编辑器')
@@ -95,7 +96,9 @@ describe('应用线框和文件交互', () => {
       view = this
       await render.call(this)
     })
-    await mount()
+    const fixture = 'flowchart TD\n A([用户下单]) --> B{库存充足?}\n B -->|是| C[扣减库存]\n B -.->|否| D[通知补货]\n subgraph 支付\n C ==> E[发起支付]\n end\n'
+    await mount({ open: async () => ({ name: '分组.mmd', code: fixture }), save: vi.fn() })
+    await open()
     const original = view.editor.code
     const node = (id: string) => host.querySelector(`[data-mw-entity="node:${id}"]`)!
     await act(async () => {
@@ -121,6 +124,39 @@ describe('应用线框和文件交互', () => {
       host.querySelector('.titlebar')!.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
     })
     expect(view.editor.selection).toEqual([])
+  })
+  it('没有草稿时默认载入完整功能示例', async () => {
+    let view!: MermaidCanvasView
+    const render = MermaidCanvasView.prototype.render
+    vi.spyOn(MermaidCanvasView.prototype, 'render').mockImplementation(async function () { view = this; await render.call(this) })
+    await mount()
+    expect(view.editor.code).toBe(DEFAULT_EXAMPLE)
+    expect(view.editor.result.typeInfo?.id).toBe('flowchart')
+    expect(view.editor.canUndo).toBe(false)
+    expect(new DraftStore().resume()).toBeNull()
+  })
+  it.each(['zh-CN', 'en'] as const)('%s 从已有文件载入示例，保留草稿且能撤销重做，保存不覆盖原文件', async locale => {
+    setLocale(locale)
+    const opened = { name: '原文件.md', path: 'project/原文件.md', code: 'flowchart LR\n  甲 --> 乙\n',
+      source: '# 原文\n```mermaid\nflowchart LR\n  甲 --> 乙\n```', diskHash: 'original-hash' }
+    const fileAccess: FileAccess = { open: async () => opened, save: vi.fn(async () => {}) }
+    let view!: MermaidCanvasView
+    const render = MermaidCanvasView.prototype.render
+    vi.spyOn(MermaidCanvasView.prototype, 'render').mockImplementation(async function () { view = this; await render.call(this) })
+    await mount(fileAccess); await open()
+    await act(async () => { view.editor.dispatch({ type: 'renameNode', id: '甲', label: '原来的未保存修改' }) })
+    const previous = view.editor.code
+    await click('tb.example')
+    expect(view.editor.code).toBe(DEFAULT_EXAMPLE)
+    expect(host.querySelector('.app-toast')?.textContent).toBe(t('toast.exampleLoaded'))
+    const exampleDraft = new DraftStore().resume()!
+    expect(exampleDraft.path).not.toBe(opened.path)
+    expect(exampleDraft.code).toBe(DEFAULT_EXAMPLE)
+    expect((await new DraftStore().open(opened)).restore()).toBe(previous)
+    await click('tb.undo'); expect(view.editor.code).toBe(previous)
+    await click('tb.redo'); expect(view.editor.code).toBe(DEFAULT_EXAMPLE)
+    await click('tb.save')
+    expect(fileAccess.save).toHaveBeenLastCalledWith({ code: DEFAULT_EXAMPLE, name: t('app.untitled'), untitled: true })
   })
   it.each(['zh-CN', 'en'] as const)('%s 一键新建清空所有内容，可撤销、重做并继续添加节点', async locale => {
     setLocale(locale)
