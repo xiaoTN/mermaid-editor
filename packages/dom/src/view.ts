@@ -311,7 +311,7 @@ export class MermaidCanvasView {
     this.popover = new Popover(this.overlayHost)
     this.notices = mountNotices(this.container, this.editor, () => this.readOnly, options.hintContainer)
     this.nodePreview = new NodeMovePreview(this.editor, this.container, this.mermaid, () => this.svg,
-      () => this.readOnly, notices => this.notices.show(notices))
+      () => this.readOnly, notices => this.notices.show(notices), (code, svg) => this.applyPreview(code, svg))
     this.gestures = new FlowchartGestures(this.editor, this.container, () => this.readOnly || this.tool === 'box-select', () => this.updatePopover(), notices => this.notices.show(notices),
       () => this.tool === 'select' && !this.inlineInput && !this.inPlaceSession, () => this.popover.hide(),
       entityId => { this.pendingEditEntity = entityId }, this.nodePreview)
@@ -707,18 +707,7 @@ export class MermaidCanvasView {
           midFlightSession.liveTimer = null
         }
       }
-      this.lastRenderedCode = code
-      this.lastError = null
-      this.errorBadge.style.display = 'none'
-      this.svgHost.innerHTML = svg
-      this.svg = this.svgHost.querySelector('svg')
-      if (this.svg) {
-        if (this.panZoomEnabled) this.prepareSvgForPanZoom()
-        else this.svg.style.maxWidth = '100%'
-        this.bindSvg()
-      }
-      this.editor.setDiagnostics([])
-      this.emit('render', { ok: true })
+      this.displaySvg(code, svg)
       if (this.activeInPlaceSession()) {
         this.resumeInPlaceSession(liveEdit)
       } else if (this.pendingEditEntity) {
@@ -742,6 +731,31 @@ export class MermaidCanvasView {
       this.editor.setDiagnostics([diag])
       this.emit('render', { ok: false, error: message })
     }
+  }
+
+  /** 松手时直接使用预览已经算好的结果，同时作废还在排队或计算的旧图。 */
+  private applyPreview(code: string, svg: string) {
+    this.editor.setCode(code, 'canvas')
+    if (this.renderTimer) clearTimeout(this.renderTimer)
+    this.renderTimer = null
+    ++this.renderSeq
+    this.displaySvg(code, svg)
+  }
+
+  /** 普通渲染与预览提交共用同一套绑定，保证选择、连线和编辑能力一致。 */
+  private displaySvg(code: string, svg: string) {
+    this.lastRenderedCode = code
+    this.lastError = null
+    this.errorBadge.style.display = 'none'
+    this.svgHost.innerHTML = svg
+    this.svg = this.svgHost.querySelector('svg')
+    if (this.svg) {
+      if (this.panZoomEnabled) this.prepareSvgForPanZoom()
+      else this.svg.style.maxWidth = '100%'
+      this.bindSvg()
+    }
+    this.editor.setDiagnostics([])
+    this.emit('render', { ok: true })
   }
 
   private bindSvg() {

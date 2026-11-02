@@ -116,6 +116,7 @@ it.each(['zh-CN', 'en'] as const)('%s 同层组拖动排序和菜单排序共用
   expect(editor.code).not.toBe(ORDER)
   expect(editor.result.flowchart!.edges.map(edge => `${edge.source}->${edge.target}`).sort()).toEqual(['A->B', 'C->D', 'X->A', 'X->C'])
   editor.undo(); expect(editor.code).toBe(ORDER)
+  await view.render()
   editor.setSelection([`subgraph:${ids[1]}`]); view.zoomBy(1)
   const button = host.querySelector<HTMLButtonElement>(`button[aria-label="${t('group.orderEarlier')}"]`)!
   expect(button).not.toBeNull(); button.click()

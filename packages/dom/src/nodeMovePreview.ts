@@ -23,6 +23,7 @@ interface Candidate {
   order?: Order
   state: 'loading' | 'ready' | 'blocked'
   alternate: boolean
+  svg?: string
 }
 
 let previewSerial = 0
@@ -58,7 +59,8 @@ export class NodeMovePreview {
 
   constructor(private editor: MermaidWysiwygEditor, private host: HTMLElement, private mermaid: MermaidLike,
     private svg: () => SVGSVGElement | null, private readonly: () => boolean,
-    private notify: (notices: EditorNotice[]) => void) {
+    private notify: (notices: EditorNotice[]) => void,
+    private apply?: (code: string, svg: string) => void) {
     this.panel.className = 'mw-drag-preview'
     this.panel.hidden = true
     this.status.setAttribute('role', 'status')
@@ -253,6 +255,7 @@ export class NodeMovePreview {
         }
       }
       if (valid) {
+        candidate.svg = markup
         const original = this.editor.result.flowchart!, changedIds = new Set(candidate.order?.ids ?? [session.id])
         const affected = new Set([...original.nodes, ...original.subgraphs].filter(item => session.isGroup
           ? [...changedIds].some(id => flowchartSubgraphContains(original, id, item.id)) : changedIds.has(item.id)).map(item => item.id))
@@ -288,12 +291,13 @@ export class NodeMovePreview {
   drop(): boolean {
     const session = this.session, candidate = this.candidate
     if (!session) return false
-    const canApply = candidate?.state === 'ready' && this.editor.code === session.code && !this.readonly()
+    const canApply = candidate?.state === 'ready' && !!candidate.svg && this.editor.code === session.code && !this.readonly()
     const warning = candidate?.state === 'loading' ? 'preview.pendingDrop' : 'preview.notApplied'
     this.cancel()
     if (canApply) {
-      // 直接应用已验证的完整候选，保证保存的源码与画布对照的是同一次计算结果。
-      this.editor.setCode(candidate!.code, 'canvas')
+      // 源码和已经验证的图一起接管画布，避免关闭预览后再等待一次渲染而闪回旧图。
+      if (this.apply) this.apply(candidate!.code, candidate!.svg!)
+      else this.editor.setCode(candidate!.code, 'canvas')
       this.editor.setSelection([`${session.isGroup ? 'subgraph' : 'node'}:${session.id}`], 'canvas')
       this.host.focus({ preventScroll: true })
       this.notify([{ key: 'preview.applied', action: { key: 'toast.undo' } }])
