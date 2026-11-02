@@ -88,6 +88,16 @@ it('多个指针事件不会重复渲染同一个候选，返回原位时隐藏�
   preview.drop(); expect(editor.code).toBe(CODE)
 })
 
+it('在可见画布内横向分支可以从远处绕行拖到另一侧，不受原有窄条范围限制', async () => {
+  preview.begin('C', svg)
+  preview.move(null, true, 20, 360)
+  await settle()
+  expect(panel().dataset.state).toBe('ready')
+  preview.drop()
+  expect(editor.result.flowchart!.edges.map(edge => edge.target)).toEqual(['C', 'B'])
+  editor.undo(); expect(editor.code).toBe(CODE)
+})
+
 it('较慢的旧预览在取消后到达，也不能重新打开窗口或改动文档', async () => {
   let complete!: (result: { svg: string }) => void
   vi.mocked(renderer.render).mockImplementationOnce(() => new Promise(resolve => { complete = resolve }))

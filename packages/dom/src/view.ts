@@ -84,11 +84,13 @@ type ViewEventMap = {
   connectPreview: { source: string | null }
 }
 
+// 主 SVG 不按原始图形尺寸裁切，节点和组可拖入空白处，改由外层画布负责裁切。
 const BASE_CSS = `
 .mw-canvas { position: relative; overflow: auto; outline: none; }
 .mw-canvas .mw-svg-host { user-select: none; -webkit-user-select: none; }
 .mw-canvas .mw-svg-host { min-height: 100%; display: flex; align-items: flex-start; justify-content: center; padding: 16px; box-sizing: border-box; }
 .mw-canvas svg { max-width: 100%; height: auto; }
+.mw-canvas .mw-svg-host > svg { overflow: visible; }
 .mw-canvas.mw-panzoom { overflow: hidden; }
 .mw-canvas.mw-panzoom .mw-svg-host { position: absolute; inset: 0; display: block; padding: 0; min-height: 0; overflow: auto; }
 .mw-canvas.mw-panzoom .mw-svg-host svg { position: absolute; left: 0; top: 0; max-width: none; height: auto; transform-origin: 0 0; }

@@ -141,6 +141,21 @@ it('分组菜单可选择目标，取消或只读不改变源码，自己的子�
   expect(host.querySelector('.mw-node-moving')).toBeNull(); expect(panel().hidden).toBe(true)
 })
 
+it('整组可从远离原行的画布空白处绕行排序，取消后源码和位置恢复', async () => {
+  await setup(ORDER)
+  const ids = ['first', 'second'].sort((a, b) => center(groupRect(a))[0] - center(groupRect(b))[0])
+  const source = groupRect(ids[1]), [x, y] = center(source)
+  const group = find(`subgraph:${ids[1]}`), original = group.getAttribute('transform')
+  pointer(source, 'pointerdown', x, y)
+  pointer(document, 'pointermove', groupRect(ids[0]).getBoundingClientRect().left - 20, 700)
+  await ready()
+  expect(editor.code).toBe(ORDER); expect(editor.canUndo).toBe(false)
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+  expect(group.getAttribute('transform')).toBe(original)
+  expect(panel().hidden).toBe(true)
+  expect(editor.code).toBe(ORDER); expect(editor.canUndo).toBe(false)
+})
+
 it('快速松手和画布外松手不会应用未完成的整组预览', async () => {
   await setup(NESTED)
   const source = groupRect('first'), [x, y] = center(source), [toX, toY] = center(groupRect('target'))

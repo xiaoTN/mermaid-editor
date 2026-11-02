@@ -181,10 +181,7 @@ export class NodeMovePreview {
     }
     const order = session.order, source = session.boxes.get(session.id)
     if (!order || !source) { this.idle(session.isGroup ? 'preview.groupUnsupported' : 'preview.unsupported'); return }
-    const other = order.axis === 'x' ? 'y' : 'x'
-    const cross = other === 'x' ? x : y
-    const span = other === 'x' ? source.width : source.height
-    if (Math.abs(cross - source[other]) > span / 2 + 24) { this.idle(session.isGroup ? 'preview.groupUnsupported' : 'preview.unsupported'); return }
+    // 排序看沿排列方向的位置，允许从画布空白处绕行，不把原来的行或列变成隐形边界。
     const coordinate = order.axis === 'x' ? x : y
     const ids = order.ids.filter(id => id !== session.id)
     const before = ids.findIndex(id => session.boxes.get(id)![order.axis] > coordinate)

@@ -90,6 +90,12 @@ it('E1：Louvre 大图至少按 60% 显示，初始位置可触达且支持滚�
   view.fitView(); expect(svg.style.transform).toContain('scale(0.6)')
 })
 
+it('图形自己的边框不能裁掉拖进可见空白处的节点，仍由外层画布控制裁切', () => {
+  const svg = host.querySelector<SVGSVGElement>('.mw-svg-host > svg')!
+  expect(getComputedStyle(svg).overflow).toBe('visible')
+  expect(getComputedStyle(host).overflow).toBe('hidden')
+})
+
 it.each([false, true])('平移后首次点击仍能选中边，无论松开时的点击是否落到 SVG：%s', releaseClick => {
   const svg = host.querySelector('svg')!
   pointer(svg, 'pointerdown'); pointer(host, 'pointermove', 90); pointer(host, 'pointerup', 90)
