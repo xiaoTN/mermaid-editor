@@ -1,6 +1,7 @@
 import { MermaidWysiwygEditor, flowchartOrderPeers, flowchartSubgraphOrderPeers, flowchartSubgraphContains, mermaidSource, type EditorNotice, type FlowchartOp } from '@inkeep/mermaid-wysiwyg-core'
 import { correlateFlowchart } from './correlate'
 import { t, onLocaleChange } from './i18n'
+import { LayoutComparison, LAYOUT_COMPARISON_CSS } from './layoutComparison'
 import type { MermaidLike } from './view'
 
 type Axis = 'x' | 'y'
@@ -41,6 +42,14 @@ export class NodeMovePreview {
   private actions = document.createElement('div')
   private applyButton = document.createElement('button')
   private cancelButton = document.createElement('button')
+  private controls = document.createElement('div')
+  private footer = document.createElement('div')
+  private beforeLabel = document.createElement('span')
+  private afterLabel = document.createElement('span')
+  private onlyAfterLabel = document.createElement('label')
+  private onlyAfterInput = document.createElement('input')
+  private onlyAfterText = document.createElement('span')
+  private comparison: LayoutComparison | null = null
   private session: Session | null = null
   private candidate: Candidate | null = null
   private timer: ReturnType<typeof setTimeout> | null = null
@@ -56,15 +65,27 @@ export class NodeMovePreview {
     this.status.setAttribute('aria-live', 'polite')
     this.image.className = 'mw-drag-preview-image'
     this.image.setAttribute('aria-hidden', 'true')
+    this.controls.className = 'mw-preview-controls'
+    this.footer.className = 'mw-preview-footer'
+    this.beforeLabel.className = 'mw-preview-legend before'
+    this.afterLabel.className = 'mw-preview-legend after'
+    this.onlyAfterInput.type = 'checkbox'
+    this.onlyAfterInput.addEventListener('change', () => this.comparison?.setOnlyAfter(this.onlyAfterInput.checked))
+    this.onlyAfterLabel.append(this.onlyAfterInput, this.onlyAfterText)
+    this.controls.append(this.title, this.beforeLabel, this.afterLabel, this.onlyAfterLabel)
     this.actions.className = 'mw-drag-preview-actions'
     this.applyButton.type = this.cancelButton.type = 'button'
     this.applyButton.addEventListener('click', () => this.drop())
     this.cancelButton.addEventListener('click', () => { this.cancel(); this.host.focus({ preventScroll: true }) })
     this.actions.append(this.cancelButton, this.applyButton)
-    this.panel.append(this.title, this.status, this.image, this.actions)
+    this.footer.append(this.status, this.actions)
+    this.panel.append(this.image, this.controls, this.footer)
     host.append(this.panel)
     this.localize()
     this.disposers.push(editor.on('change', () => this.cancel()), onLocaleChange(() => { this.cancel(); this.localize() }))
+    const viewport = () => this.updateViewport()
+    host.addEventListener('scroll', viewport, true); window.addEventListener('resize', viewport)
+    this.disposers.push(() => { host.removeEventListener('scroll', viewport, true); window.removeEventListener('resize', viewport) })
   }
 
   private localize() {
@@ -74,6 +95,9 @@ export class NodeMovePreview {
     this.cancelButton.textContent = t('preview.cancel')
     this.applyButton.setAttribute('aria-label', t('preview.apply'))
     this.cancelButton.setAttribute('aria-label', t('preview.cancel'))
+    this.beforeLabel.textContent = t('preview.before'); this.afterLabel.textContent = t('preview.after')
+    this.onlyAfterText.textContent = t('preview.onlyAfter')
+    this.onlyAfterInput.setAttribute('aria-label', t('preview.onlyAfter'))
   }
 
   private snapshot(id: string, svg: SVGSVGElement): Session {
@@ -117,13 +141,17 @@ export class NodeMovePreview {
   begin(id: string, svg: SVGSVGElement) {
     this.cancel()
     this.session = this.snapshot(id, svg)
-    const source = this.session.boxes.get(id), bounds = this.host.getBoundingClientRect()
-    this.panel.style.left = source && source.x > bounds.left + bounds.width / 2 ? '12px' : ''
-    this.panel.style.right = this.panel.style.left ? '' : '12px'
-    this.panel.style.maxHeight = `${Math.max(140, (this.host.clientHeight || 280) - 24)}px`
+    const graph = this.editor.result.flowchart!
+    const moving = new Set([...graph.nodes, ...graph.subgraphs].filter(item => this.session!.isGroup
+      ? flowchartSubgraphContains(graph, id, item.id) : item.id === id).map(item => item.entityId))
+    const anchor = graph.nodes.find(node => !moving.has(node.entityId) && !graph.subgraphs.some(group => group.id === node.id) &&
+      !graph.edges.some(edge => edge.target === node.id))?.entityId
+    this.comparison = new LayoutComparison(this.host, this.image, svg, `${this.session.isGroup ? 'subgraph' : 'node'}:${id}`, moving, anchor)
+    this.comparison.setOnlyAfter(this.onlyAfterInput.checked)
     this.localize()
     this.actions.hidden = true
     this.applyButton.disabled = true
+    this.onlyAfterInput.disabled = true
     this.panel.style.pointerEvents = 'none'
     this.panel.hidden = false
     this.idle(this.session.isGroup ? 'preview.groupChoose' : 'preview.choose')
@@ -133,9 +161,11 @@ export class NodeMovePreview {
     ++this.generation
     if (this.timer) clearTimeout(this.timer)
     this.timer = null; this.candidate = null
-    this.image.replaceChildren()
+    this.comparison?.clear()
     this.status.textContent = t(key)
     this.panel.dataset.state = 'idle'
+    this.onlyAfterInput.disabled = true
+    this.applyButton.disabled = true
   }
 
   move(group: string | null, valid: boolean, x: number, y: number) {
@@ -170,8 +200,8 @@ export class NodeMovePreview {
     const draft = new MermaidWysiwygEditor({ code: session.code })
     const result = draft.dispatch(op)
     if (!result?.edits.length || result.warnings?.length) {
-      if (op.type === 'reorderSubgraphs' && order && !alternate) {
-        this.request({ type: 'reorderSubgraphs', ids: [...op.ids].reverse() }, order, true, key); return
+      if ((op.type === 'reorderSubgraphs' || op.type === 'reorderNodes') && order && !alternate) {
+        this.request({ type: op.type, ids: [...op.ids].reverse() }, order, true, key); return
       }
       this.idle(session.isGroup ? 'preview.groupUnsupported' : 'preview.unsupported'); return
     }
@@ -179,10 +209,11 @@ export class NodeMovePreview {
     const candidate: Candidate = { key, op, code: draft.code, order, state: 'loading', alternate }
     this.candidate = candidate
     const generation = ++this.generation
-    this.image.replaceChildren()
+    this.comparison?.clear()
     this.status.textContent = t('preview.loading')
     this.panel.dataset.state = 'loading'
     this.applyButton.disabled = true
+    this.onlyAfterInput.disabled = true
     this.timer = setTimeout(() => { this.timer = null; void this.render(candidate, generation) }, session.keyboard ? 0 : 120)
   }
 
@@ -199,6 +230,8 @@ export class NodeMovePreview {
       scratch.innerHTML = markup
       const svg = scratch.querySelector('svg')
       if (!svg) throw new Error()
+      const dimensions = svg.getAttribute('viewBox')?.trim().split(/[\s,]+/).map(Number)
+      if (dimensions?.[2] && dimensions[3]) svg.style.cssText = `width:${dimensions[2]}px;height:${dimensions[3]}px;max-width:none`
       const draft = new MermaidWysiwygEditor({ code: candidate.code })
       const correlation = correlateFlowchart(svg, draft.result.flowchart!)
       let valid = correlation.failed.length === 0
@@ -213,26 +246,36 @@ export class NodeMovePreview {
           sameLayer(box, positions[0]!, axis, session.isGroup) &&
           (index === 0 || box[axis] > positions[index - 1]![axis] + 1))
       }
-      // Mermaid 对分组声明的排列可能反向；最多尝试另一种源码顺序，并始终核对用户要求的画面顺序。
-      if (!valid && candidate.op.type === 'reorderSubgraphs' && candidate.order && !candidate.alternate) {
-        this.request({ type: 'reorderSubgraphs', ids: [...candidate.op.ids].reverse() }, candidate.order, true, candidate.key)
-        return
+      // 自动排版可能反向使用源码顺序；只尝试有实际改动的另一种提示，并核对画面顺序。
+      if (!valid && (candidate.op.type === 'reorderSubgraphs' || candidate.op.type === 'reorderNodes') && candidate.order && !candidate.alternate) {
+        const reversed = { type: candidate.op.type, ids: [...candidate.op.ids].reverse() }
+        const fallback = new MermaidWysiwygEditor({ code: session.code })
+        if (fallback.dispatch(reversed)?.edits.length) {
+          this.request(reversed, candidate.order, true, candidate.key)
+          return
+        }
       }
-      correlation.nodes.get(`${session.isGroup ? 'subgraph' : 'node'}:${session.id}`)?.classList.add('mw-preview-focus')
-      // 缩略图不参与主画布的节点命中、框选和分组检测。
-      for (const element of svg.querySelectorAll('[data-mw-entity], [data-mw-ambiguous]')) {
-        element.removeAttribute('data-mw-entity'); element.removeAttribute('data-mw-ambiguous')
+      if (valid) {
+        const original = this.editor.result.flowchart!, changedIds = new Set(candidate.order?.ids ?? [session.id])
+        const affected = new Set([...original.nodes, ...original.subgraphs].filter(item => session.isGroup
+          ? [...changedIds].some(id => flowchartSubgraphContains(original, id, item.id)) : changedIds.has(item.id)).map(item => item.id))
+        const focus = new Set<string>()
+        for (const graph of [original, draft.result.flowchart!]) {
+          for (const item of [...graph.nodes, ...graph.subgraphs]) if (affected.has(item.id)) focus.add(item.entityId)
+          for (const group of graph.subgraphs) if ([...affected].some(id => flowchartSubgraphContains(graph, group.id, id))) focus.add(group.entityId)
+          for (const edge of graph.edges) if (affected.has(edge.source) || affected.has(edge.target)) focus.add(edge.entityId)
+        }
+        this.comparison?.show(svg, focus)
       }
-      svg.removeAttribute('width'); svg.removeAttribute('height')
-      svg.style.cssText = 'width:100%;height:100%;max-width:none'
-      this.image.replaceChildren(svg)
       candidate.state = valid ? 'ready' : 'blocked'
       this.panel.dataset.state = candidate.state
       this.status.textContent = t(valid ? session.keyboard ? 'preview.keyboardReady' : 'preview.ready' : 'preview.blocked')
       this.applyButton.disabled = !valid
+      this.onlyAfterInput.disabled = !valid
       if (session.keyboard && valid) this.applyButton.focus()
     } catch {
       if (generation !== this.generation || this.session !== session) return
+      this.comparison?.clear()
       candidate.state = 'blocked'
       this.panel.dataset.state = 'blocked'
       this.status.textContent = t('preview.failed')
@@ -252,7 +295,7 @@ export class NodeMovePreview {
     const warning = candidate?.state === 'loading' ? 'preview.pendingDrop' : 'preview.notApplied'
     this.cancel()
     if (canApply) {
-      // 直接应用已验证的完整候选，保证保存的源码与小窗展示的是同一次计算结果。
+      // 直接应用已验证的完整候选，保证保存的源码与画布对照的是同一次计算结果。
       this.editor.setCode(candidate!.code, 'canvas')
       this.editor.setSelection([`${session.isGroup ? 'subgraph' : 'node'}:${session.id}`], 'canvas')
       this.host.focus({ preventScroll: true })
@@ -276,7 +319,6 @@ export class NodeMovePreview {
     const session = this.session!
     session.keyboard = true
     this.actions.hidden = false
-    this.panel.style.pointerEvents = 'auto'
     this.cancelButton.focus()
     const order = session.order!, ids = [...order.ids], index = ids.indexOf(id)
     ;[ids[index], ids[index + step]] = [ids[index + step], ids[index]]
@@ -290,7 +332,6 @@ export class NodeMovePreview {
     this.begin(id, svg)
     this.session!.keyboard = true
     this.actions.hidden = false
-    this.panel.style.pointerEvents = 'auto'
     this.cancelButton.focus()
     this.request({ type: 'moveSubgraph', id, subgraph: group })
   }
@@ -299,26 +340,38 @@ export class NodeMovePreview {
     ++this.generation
     if (this.timer) clearTimeout(this.timer)
     this.timer = null; this.session = null; this.candidate = null
+    this.comparison?.clear(); this.comparison = null
     this.panel.hidden = true; this.image.replaceChildren()
     this.status.textContent = ''
   }
+
+  updateViewport() { this.comparison?.updateViewport() }
+
+  get active() { return this.session !== null }
 
   destroy() { this.cancel(); this.disposers.forEach(dispose => dispose()); this.panel.remove() }
 }
 
 export const NODE_MOVE_PREVIEW_CSS = `
-.mw-drag-preview { position:absolute; top:12px; right:12px; z-index:24; width:min(320px,calc(100% - 24px)); height:250px; box-sizing:border-box; padding:12px; display:flex; flex-direction:column; gap:8px; border:1px solid var(--mw-chrome-border,#d9e1ed); border-radius:12px; background:var(--mw-chrome-bg,#fff); color:var(--mw-chrome-fg,#25334a); box-shadow:0 6px 24px #25334a22; pointer-events:none; font:12px/1.5 system-ui; }
+.mw-drag-preview { position:absolute; inset:0; z-index:24; box-sizing:border-box; color:var(--mw-chrome-fg,#25334a); pointer-events:none; font:12px/1.5 system-ui; overflow:hidden; }
 .mw-drag-preview[hidden] { display:none; }
-.mw-drag-preview strong { font-size:13px; }
-.mw-drag-preview [role=status] { min-height:36px; }
+.mw-preview-controls { position:absolute; top:8px; left:12px; right:12px; display:flex; align-items:center; gap:16px; flex-wrap:wrap; padding:7px 10px; border-bottom:1px solid var(--mw-chrome-border,#d9e1ed); background:var(--mw-chrome-bg,#fff); }
+.mw-preview-controls strong { font-size:12px; margin-right:auto; }
+.mw-preview-legend { display:flex; align-items:center; gap:6px; }
+.mw-preview-legend::before { content:''; width:22px; height:12px; border:1px dashed #627189; border-radius:3px; }
+.mw-preview-legend.after::before { border-style:solid; border-color:var(--mw-accent,#315fd6); background:color-mix(in srgb,var(--mw-accent,#315fd6) 6%,transparent); }
+.mw-preview-controls label { display:flex; align-items:center; gap:5px; cursor:pointer; pointer-events:auto; }
+.mw-preview-controls input { accent-color:var(--mw-accent,#315fd6); }
+.mw-preview-controls input:focus-visible { outline:2px solid var(--mw-accent,#315fd6); outline-offset:2px; }
+.mw-preview-footer { position:absolute; bottom:10px; left:12px; right:104px; display:flex; align-items:center; gap:10px; padding:7px 10px; border-radius:7px; background:color-mix(in srgb,var(--mw-accent,#315fd6) 7%,var(--mw-chrome-bg,#fff)); border:1px solid var(--mw-chrome-border,#d9e1ed); }
+.mw-drag-preview [role=status] { flex:1; min-width:0; }
 .mw-drag-preview[data-state=blocked] [role=status] { color:#b45309; }
-.mw-drag-preview-image { flex:1; min-height:0; overflow:hidden; border:1px solid var(--mw-chrome-border,#d9e1ed); border-radius:7px; }
-.mw-drag-preview-image:empty { border-style:dashed; }
-.mw-drag-preview .mw-preview-focus { filter:drop-shadow(0 0 4px var(--mw-accent,#315fd6)); }
-.mw-drag-preview-actions { display:flex; justify-content:flex-end; gap:8px; }
+.mw-drag-preview-image { position:absolute; inset:0; overflow:hidden; }
+.mw-drag-preview-actions { display:flex; justify-content:flex-end; gap:8px; pointer-events:auto; }
 .mw-drag-preview-actions[hidden] { display:none; }
 .mw-drag-preview-actions button { padding:5px 10px; border:1px solid var(--mw-chrome-border,#d9e1ed); border-radius:7px; color:inherit; background:var(--mw-chrome-bg,#fff); cursor:pointer; font:inherit; }
 .mw-drag-preview-actions button:focus-visible { outline:2px solid var(--mw-accent,#315fd6); outline-offset:2px; }
 .mw-drag-preview-actions button:hover:not(:disabled) { background:var(--mw-chrome-hover,#eef2f8); }
 .mw-drag-preview-actions button:disabled { opacity:.5; cursor:default; }
-`
+@media(max-width:700px) { .mw-preview-controls { gap:6px 12px; } .mw-preview-controls strong { display:none; } .mw-preview-footer { right:12px; bottom:46px; flex-wrap:wrap; } .mw-drag-preview-actions { margin-left:auto; } }
+` + LAYOUT_COMPARISON_CSS

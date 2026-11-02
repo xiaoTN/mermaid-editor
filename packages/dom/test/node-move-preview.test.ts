@@ -6,9 +6,10 @@ import { correlateFlowchart } from '../src/correlate'
 import { setLocale, t, type MermaidLike } from '../src'
 
 const CODE = 'flowchart TD\n A[入口]\n B[乙]\n C[丙]\n A --> B\n A --> C\n linkStyle 0 stroke:red\n'
-const markup = (id: string, code: string, respectsOrder = true) => {
+const markup = (id: string, code: string, respectsOrder = true, reverseOrder = false) => {
   const graph = new MermaidWysiwygEditor({ code }).result.flowchart!
   const ids = respectsOrder ? graph.edges.map(edge => edge.target) : ['B', 'C']
+  if (reverseOrder) ids.reverse()
   return `<svg id="${id}" viewBox="0 0 300 180" xmlns="http://www.w3.org/2000/svg"><g class="nodes">${graph.nodes.map(node =>
     `<g class="node" id="${id}-flowchart-${node.id}-0" data-x="${node.id === 'A' ? 100 : 50 + ids.indexOf(node.id) * 130}" data-y="${node.id === 'A' ? 20 : 100}"><rect width="40" height="20"/><text>${node.label}</text></g>`).join('')}</g><g class="edgePaths">${graph.edges.map(edge =>
     `<path id="${id}-L_${edge.source}_${edge.target}_0"/>`).join('')}</g></svg>`
@@ -50,11 +51,15 @@ it.each(['zh-CN', 'en'] as const)('%s 拖动期间显示真实候选结果，源
   expect(panel().dataset.state).toBe('ready')
   expect(panel().querySelector('svg')).not.toBeNull()
   expect(panel().querySelector('[data-mw-entity]')).toBeNull()
+  expect(panel().querySelector('.mw-compare-before')).not.toBeNull()
+  expect(panel().querySelector('.mw-compare-after')).not.toBeNull()
+  expect(svg.classList.contains('mw-preview-source')).toBe(true)
   expect(editor.code).toBe(CODE); expect(editor.canUndo).toBe(false)
   preview.drop()
   expect(editor.code).toBe(vi.mocked(renderer.render).mock.calls[0][1])
   expect(editor.result.flowchart!.edges.map(edge => edge.target)).toEqual(['C', 'B'])
   expect(panel().hidden).toBe(true)
+  expect(svg.classList.contains('mw-preview-source')).toBe(false)
   editor.undo(); expect(editor.code).toBe(CODE); expect(editor.canUndo).toBe(false)
 })
 
@@ -70,6 +75,7 @@ it.each(['pending', 'blocked', 'failed', 'readonly', 'cancel', 'change'] as cons
   preview.drop(); await settle()
   expect(editor.code).toBe(expected)
   expect(panel().hidden).toBe(true)
+  expect(svg.classList.contains('mw-preview-source')).toBe(false)
 })
 
 it('多个指针事件不会重复渲染同一个候选，返回原位时隐藏旧结果', async () => {
@@ -101,5 +107,32 @@ it('非拖动入口同样先检查实际排版，再移动分支', async () => {
   expect(editor.code).toBe(CODE)
   panel().querySelectorAll<HTMLButtonElement>('button')[1].click()
   expect(editor.result.flowchart!.edges.map(edge => edge.target)).toEqual(['C', 'B'])
+  editor.undo(); expect(editor.code).toBe(CODE)
+})
+
+it('切换仅看移动后不提交源码，回到无效落点时禁用应用并恢复原图', async () => {
+  preview.nudge('C', -1); await settle()
+  const checkbox = panel().querySelector<HTMLInputElement>(`input[aria-label="${t('preview.onlyAfter')}"]`)!
+  checkbox.click()
+  expect(panel().querySelector('.mw-compare-only-after')).not.toBeNull()
+  expect(editor.code).toBe(CODE); expect(editor.canUndo).toBe(false)
+  preview.move(null, false, 0, 0)
+  expect(svg.classList.contains('mw-preview-source')).toBe(false)
+  expect(panel().querySelector<HTMLButtonElement>(`button[aria-label="${t('preview.apply')}"]`)!.disabled).toBe(true)
+})
+
+it('节点的画面顺序与源码相反时，仍按画面里的前后关系生成对照', async () => {
+  preview.destroy(); host.innerHTML = markup('reversed', CODE, true, true); svg = host.querySelector('svg')!
+  correlateFlowchart(svg, editor.result.flowchart!)
+  vi.mocked(renderer.render).mockImplementation(async (id, code) => ({ svg: markup(id, code, true, true) }))
+  preview = new NodeMovePreview(editor, host, renderer, () => svg, () => readonly, notices)
+  expect(preview.canNudge('B', -1)).toBe(true)
+  preview.nudge('B', -1); await settle()
+  expect(panel().dataset.state).toBe('ready')
+  const after = panel().querySelector('.mw-compare-after')!
+  expect(Number(after.querySelector('[data-mw-preview-entity="node:B"]')?.getAttribute('data-x')))
+    .toBeLessThan(Number(after.querySelector('[data-mw-preview-entity="node:C"]')?.getAttribute('data-x')))
+  expect(editor.code).toBe(CODE)
+  preview.drop(); expect(editor.result.flowchart!.edges.map(edge => edge.target)).toEqual(['C', 'B'])
   editor.undo(); expect(editor.code).toBe(CODE)
 })

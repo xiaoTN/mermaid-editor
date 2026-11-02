@@ -130,7 +130,6 @@ const BASE_CSS = `
 }
 `
 
-let styleInjected = false
 /** global counter so concurrent views never collide on mermaid's DOM ids */
 let renderIdCounter = 0
 
@@ -284,13 +283,16 @@ export class MermaidCanvasView {
     this.hooks = options.hooks ?? {}
     this.mermaidConfig = { startOnLoad: false, ...options.mermaidConfig }
 
-    if (!styleInjected) {
-      const style = document.createElement('style')
+    // 多次挂载和开发热更新共用一份样式，避免旧预览窗口的规则残留。
+    const styles = BASE_CSS + POPOVER_CSS + GESTURE_CSS + NOTICE_CSS + BOX_SELECTION_CSS + NODE_MOVE_PREVIEW_CSS
+    let style = document.head.querySelector<HTMLStyleElement>('style[data-mw]')
+    if (!style) {
+      style = document.createElement('style')
       style.setAttribute('data-mw', '')
-      style.textContent = BASE_CSS + POPOVER_CSS + GESTURE_CSS + NOTICE_CSS + BOX_SELECTION_CSS + NODE_MOVE_PREVIEW_CSS
       document.head.appendChild(style)
-      styleInjected = true
     }
+    if (style.textContent !== styles) style.textContent = styles
+    for (const duplicate of document.head.querySelectorAll('style[data-mw]')) if (duplicate !== style) duplicate.remove()
 
     this.container.classList.add('mw-canvas')
     this.container.tabIndex = 0
@@ -345,6 +347,7 @@ export class MermaidCanvasView {
       const inside = this.container.contains(target)
       const element = target instanceof Element ? target : target.parentElement
       if (inside && element) {
+        if (this.nodePreview.active && element.closest('.mw-zoom-controls')) return
         if (element.closest('.mw-popover, .mw-popover-panel, .mw-ports, .mw-endpoints, .mw-new-node-menu, .mw-drag-preview, input, textarea, select, [contenteditable="true"]')) return
         if (this.svg?.contains(element) && element.closest('[data-mw-entity], [data-mw-ambiguous]')) return
       }
@@ -628,6 +631,7 @@ export class MermaidCanvasView {
     if (!this.svg) return
     this.applyingOwnTransform = true
     this.svg.style.transform = `translate(${this.zoomTx}px, ${this.zoomTy}px) scale(${this.zoomScale})`
+    this.nodePreview.updateViewport()
     // mutation records for this write are delivered in a microtask queued at
     // mutation time — before this one — so the observer still sees the flag
     queueMicrotask(() => {
@@ -1570,7 +1574,7 @@ export class MermaidCanvasView {
   private updatePopover() {
     this.gestures.update()
     this.popover.hide()
-    if (this.readOnly || this.inlineInput || this.inPlaceSession) return
+    if (this.readOnly || this.inlineInput || this.inPlaceSession || this.nodePreview.active) return
     const sel = this.editor.selection
     if (!sel.length || !this.svg) return
     if (sel.length > 1) {
