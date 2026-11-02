@@ -1,5 +1,3 @@
-import { t } from './i18n'
-
 type Box = { x: number; y: number; width: number; height: number }
 type Metric = { box: Box; points: number[]; path: string | null }
 type Frame = { width: number; height: number; left: number; top: number; scaleX: number; scaleY: number }
@@ -111,17 +109,12 @@ export class LayoutComparison {
   private oldMetrics: Map<string, Metric[]>
   private newMetrics = new Map<string, Metric[]>()
   private offset = { x: 0, y: 0 }
-  private beforeTag = document.createElement('span')
-  private afterTag = document.createElement('span')
   private onlyAfter = false
 
   constructor(private host: HTMLElement, private layer: HTMLElement, private source: SVGSVGElement,
-    private entityId: string, private moving: Set<string>, private anchor?: string) {
+    private moving: Set<string>, private anchor?: string) {
     this.before = source.cloneNode(true) as SVGSVGElement
     this.oldMetrics = metrics(source)
-    this.beforeTag.className = 'mw-compare-tag before'
-    this.afterTag.className = 'mw-compare-tag after'
-    this.beforeTag.textContent = t('preview.before'); this.afterTag.textContent = t('preview.after')
   }
 
   show(svg: SVGSVGElement, focus: Set<string>) {
@@ -146,7 +139,7 @@ export class LayoutComparison {
       if (width * height > Math.min(old.width * old.height, next.width * next.height) * .35) element.classList.add('mw-preview-overlap')
     }
     this.after = after
-    this.layer.replaceChildren(after, before, this.beforeTag, this.afterTag)
+    this.layer.replaceChildren(after, before)
     this.source.classList.add('mw-preview-source')
     this.host.classList.add('mw-layout-preview-active')
     this.setOnlyAfter(this.onlyAfter)
@@ -156,7 +149,6 @@ export class LayoutComparison {
   setOnlyAfter(value: boolean) {
     this.onlyAfter = value
     this.layer.classList.toggle('mw-compare-only-after', value)
-    this.beforeTag.hidden = value
   }
 
   updateViewport() {
@@ -170,19 +162,6 @@ export class LayoutComparison {
     }
     place(before, left, top, root.width * root.scaleX, root.height * root.scaleY)
     place(after, left + this.offset.x * root.scaleX, top + this.offset.y * root.scaleY, next.width * root.scaleX, next.height * root.scaleY)
-    const tag = (element: HTMLElement, box: Box | undefined, dx: number, dy: number) => {
-      if (!box) { element.hidden = true; return }
-      const x = left + (box.x + box.width + dx) * root.scaleX, y = top + (box.y + dy) * root.scaleY
-      element.style.left = `${Math.max(4, Math.min(this.host.clientWidth - 70, x - 56))}px`
-      element.style.top = `${Math.max(48, Math.min(this.host.clientHeight - 72, y - 22))}px`
-    }
-    tag(this.beforeTag, this.oldMetrics.get(this.entityId)?.[0]?.box, 0, 0)
-    tag(this.afterTag, this.newMetrics.get(this.entityId)?.[0]?.box, this.offset.x, this.offset.y)
-    if (Math.abs(parseFloat(this.beforeTag.style.left) - parseFloat(this.afterTag.style.left)) < 75 &&
-      Math.abs(parseFloat(this.beforeTag.style.top) - parseFloat(this.afterTag.style.top)) < 24) {
-      const box = this.newMetrics.get(this.entityId)?.[0]?.box
-      if (box) this.afterTag.style.top = `${Math.min(this.host.clientHeight - 72, top + (box.y + box.height + this.offset.y) * root.scaleY + 6)}px`
-    }
   }
 
   clear() {
@@ -203,8 +182,5 @@ export const LAYOUT_COMPARISON_CSS = `
 .mw-compare-before [data-mw-preview-change] > :is(rect,polygon,path,circle,ellipse), .mw-compare-before path[data-mw-preview-change] { stroke:#627189 !important; stroke-dasharray:6 4 !important; fill-opacity:.35; }
 .mw-compare-after [data-mw-preview-change] > :is(rect,polygon,path,circle,ellipse), .mw-compare-after path[data-mw-preview-change] { stroke:var(--mw-accent,#315fd6) !important; stroke-width:2px !important; }
 .mw-compare-only-after .mw-compare-before { display:none; }
-.mw-compare-tag { position:absolute; padding:3px 8px; border-radius:12px; color:white; font:11px/1.3 system-ui; background:#627189; white-space:nowrap; }
-.mw-compare-tag.after { background:var(--mw-accent,#315fd6); }
-.mw-compare-tag[hidden] { display:none; }
 .mw-canvas:has(.mw-drag-preview:not([hidden])) > :is(.mw-ports,.mw-endpoints,.mw-connect-hint) { display:none; }
 `

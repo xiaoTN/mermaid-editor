@@ -71,8 +71,6 @@ export default {
   'toast.groupCycle': "A group cannot connect to itself or its members; choose another node or group",
   'drag.newNode': "New node",
   'preview.title': 'Layout preview',
-  'preview.before': 'Before',
-  'preview.after': 'After',
   'preview.onlyAfter': 'Show after only',
   'preview.choose': 'Drag before or after a sibling branch, or into another group. Esc cancels.',
   'preview.groupChoose': 'Drag the whole group before or after a sibling, into another group, or outside its parent. Esc cancels.',

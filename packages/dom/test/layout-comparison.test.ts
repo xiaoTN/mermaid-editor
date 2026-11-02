@@ -23,7 +23,7 @@ beforeEach(() => {
   host.setAttribute('data-left', '50'); host.setAttribute('data-top', '20')
   host.innerHTML = markup('original'); host.append(layer); source = host.querySelector('svg')!
   const scratch = document.createElement('div'); scratch.innerHTML = markup('candidate', 50, 60); target = scratch.querySelector('svg')!
-  comparison = new LayoutComparison(host, layer, source, 'node:B', new Set(['node:B']), 'node:A')
+  comparison = new LayoutComparison(host, layer, source, new Set(['node:B']), 'node:A')
 })
 afterEach(() => { comparison.clear(); host.remove(); vi.restoreAllMocks() })
 
@@ -39,7 +39,7 @@ it('原图和新图在同一坐标系对齐，只有指定变化对象保留旧�
   expect(before.querySelector('[data-mw-preview-entity="node:A"]')?.hasAttribute('data-mw-preview-change')).toBe(false)
   expect(before.querySelector('[data-mw-preview-entity="node:C"]')?.hasAttribute('data-mw-preview-change')).toBe(false)
   expect(after.querySelector('[data-mw-preview-entity="edge:A->B#0"]')?.hasAttribute('data-mw-preview-change')).toBe(true)
-  expect(layer.querySelectorAll('.mw-compare-tag')).toHaveLength(2)
+  expect(layer.querySelectorAll('.mw-compare-tag')).toHaveLength(0)
   expect(before.querySelector<SVGElement>('[data-mw-preview-entity="node:B"] rect')!.style.getPropertyValue('stroke-dasharray')).toBe('6 4')
   expect(after.querySelector<SVGElement>('[data-mw-preview-entity="node:B"] rect')!.style.getPropertyValue('stroke-dasharray')).toBe('none')
   expect(source.querySelector<SVGElement>('[data-mw-entity="node:B"] rect')!.style.getPropertyValue('stroke')).toBe('')
@@ -76,7 +76,7 @@ it('仅看移动后保留真实候选，缩放平移同步更新，取消时完�
   comparison.show(target, new Set(['node:B']))
   comparison.setOnlyAfter(true)
   expect(layer.classList.contains('mw-compare-only-after')).toBe(true)
-  expect(layer.querySelector<HTMLElement>('.mw-compare-tag.before')!.hidden).toBe(true)
+  expect(layer.children).toHaveLength(2)
   source.setAttribute('data-left', '140'); source.setAttribute('data-width', '800'); source.setAttribute('data-height', '400')
   comparison.updateViewport()
   expect(layer.querySelector<SVGSVGElement>('.mw-compare-before')!.style.left).toBe('90px')

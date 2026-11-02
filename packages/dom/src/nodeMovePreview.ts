@@ -45,8 +45,6 @@ export class NodeMovePreview {
   private cancelButton = document.createElement('button')
   private controls = document.createElement('div')
   private footer = document.createElement('div')
-  private beforeLabel = document.createElement('span')
-  private afterLabel = document.createElement('span')
   private onlyAfterLabel = document.createElement('label')
   private onlyAfterInput = document.createElement('input')
   private onlyAfterText = document.createElement('span')
@@ -69,12 +67,10 @@ export class NodeMovePreview {
     this.image.setAttribute('aria-hidden', 'true')
     this.controls.className = 'mw-preview-controls'
     this.footer.className = 'mw-preview-footer'
-    this.beforeLabel.className = 'mw-preview-legend before'
-    this.afterLabel.className = 'mw-preview-legend after'
     this.onlyAfterInput.type = 'checkbox'
     this.onlyAfterInput.addEventListener('change', () => this.comparison?.setOnlyAfter(this.onlyAfterInput.checked))
     this.onlyAfterLabel.append(this.onlyAfterInput, this.onlyAfterText)
-    this.controls.append(this.title, this.beforeLabel, this.afterLabel, this.onlyAfterLabel)
+    this.controls.append(this.title, this.onlyAfterLabel)
     this.actions.className = 'mw-drag-preview-actions'
     this.applyButton.type = this.cancelButton.type = 'button'
     this.applyButton.addEventListener('click', () => this.drop())
@@ -97,7 +93,6 @@ export class NodeMovePreview {
     this.cancelButton.textContent = t('preview.cancel')
     this.applyButton.setAttribute('aria-label', t('preview.apply'))
     this.cancelButton.setAttribute('aria-label', t('preview.cancel'))
-    this.beforeLabel.textContent = t('preview.before'); this.afterLabel.textContent = t('preview.after')
     this.onlyAfterText.textContent = t('preview.onlyAfter')
     this.onlyAfterInput.setAttribute('aria-label', t('preview.onlyAfter'))
   }
@@ -148,7 +143,7 @@ export class NodeMovePreview {
       ? flowchartSubgraphContains(graph, id, item.id) : item.id === id).map(item => item.entityId))
     const anchor = graph.nodes.find(node => !moving.has(node.entityId) && !graph.subgraphs.some(group => group.id === node.id) &&
       !graph.edges.some(edge => edge.target === node.id))?.entityId
-    this.comparison = new LayoutComparison(this.host, this.image, svg, `${this.session.isGroup ? 'subgraph' : 'node'}:${id}`, moving, anchor)
+    this.comparison = new LayoutComparison(this.host, this.image, svg, moving, anchor)
     this.comparison.setOnlyAfter(this.onlyAfterInput.checked)
     this.localize()
     this.actions.hidden = true
@@ -358,9 +353,6 @@ export const NODE_MOVE_PREVIEW_CSS = `
 .mw-drag-preview[hidden] { display:none; }
 .mw-preview-controls { position:absolute; top:8px; left:12px; right:12px; display:flex; align-items:center; gap:16px; flex-wrap:wrap; padding:7px 10px; border-bottom:1px solid var(--mw-chrome-border,#d9e1ed); background:var(--mw-chrome-bg,#fff); }
 .mw-preview-controls strong { font-size:12px; margin-right:auto; }
-.mw-preview-legend { display:flex; align-items:center; gap:6px; }
-.mw-preview-legend::before { content:''; width:22px; height:12px; border:1px dashed #627189; border-radius:3px; }
-.mw-preview-legend.after::before { border-style:solid; border-color:var(--mw-accent,#315fd6); background:color-mix(in srgb,var(--mw-accent,#315fd6) 6%,transparent); }
 .mw-preview-controls label { display:flex; align-items:center; gap:5px; cursor:pointer; pointer-events:auto; }
 .mw-preview-controls input { accent-color:var(--mw-accent,#315fd6); }
 .mw-preview-controls input:focus-visible { outline:2px solid var(--mw-accent,#315fd6); outline-offset:2px; }

@@ -73,8 +73,6 @@ export default {
   'toast.groupCycle': "分组不能连接自身或内部成员，请连接其他节点或分组",
   'drag.newNode': "新建节点",
   'preview.title': '排版预览',
-  'preview.before': '移动前',
-  'preview.after': '移动后',
   'preview.onlyAfter': '仅看移动后',
   'preview.choose': '拖到并列分支前后，或移入其他分组。Esc 取消。',
   'preview.groupChoose': '整组拖到同层组的前后、其他组内部，或父组外。Esc 取消。',
