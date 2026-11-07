@@ -353,6 +353,22 @@ export class MermaidCanvasView {
       () => !this.readOnly && !!this.editor.result.flowchart && this.tool !== 'connect' && !this.inlineInput && !this.inPlaceSession,
       () => this.tool === 'box-select', () => this.popover.hide(), () => this.updatePopover())
     this.disposers.push(() => this.boxSelection?.destroy())
+    // Padding and the viewport outside the SVG are canvas background too.
+    // SVG clicks use onSvgClick; consume pan-release suppression here only
+    // when that handler did not receive the click.
+    const backgroundClick = (e: MouseEvent) => {
+      const target = e.target as Element | null
+      if (!target || (this.svg?.contains(target) && target !== this.container)) return
+      if (target !== this.container && target !== this.svgHost) return
+      if (this.suppressNextClick) { this.suppressNextClick = false; return }
+      if (this.inlineInput || this.inPlaceSession) return
+      this.editor.clearSelection('canvas')
+      this.popover.hide()
+      this.container.focus({ preventScroll: true })
+    }
+    this.container.addEventListener('click', backgroundClick)
+    this.disposers.push(() => this.container.removeEventListener('click', backgroundClick))
+
     if (this.panZoomEnabled) this.setupPanZoom()
 
     void this.render()
@@ -653,6 +669,9 @@ export class MermaidCanvasView {
       return
     }
     const code = this.editor.code
+    // Returning to the displayed bytes must also invalidate a render of an
+    // intermediate file which is still awaiting Mermaid.
+    const seq = ++this.renderSeq
     if (code === this.lastRenderedCode) {
       // an intervening failed parse can leave a stale error badge even though
       // the document is back to the last successfully rendered text (e.g. undo
@@ -665,7 +684,6 @@ export class MermaidCanvasView {
       }
       return
     }
-    const seq = ++this.renderSeq
     const id = `mw-render-${++renderIdCounter}`
     try {
       const { svg } = await this.mermaid.render(id, mermaidSource(code))
@@ -1314,7 +1332,11 @@ export class MermaidCanvasView {
         e.preventDefault()
         finish(true)
       } else if (e.key === 'Escape') {
+        e.preventDefault()
         finish(false)
+        this.editor.clearSelection('canvas')
+        this.popover.hide()
+        this.container.focus({ preventScroll: true })
       }
     }
     const onBlur = () => {
@@ -1459,7 +1481,13 @@ export class MermaidCanvasView {
         e.preventDefault()
         commit()
       }
-      if (e.key === 'Escape') this.closeInlineEditor(false)
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        this.closeInlineEditor(false)
+        this.editor.clearSelection('canvas')
+        this.popover.hide()
+        this.container.focus({ preventScroll: true })
+      }
     })
     div.addEventListener('blur', commit)
   }
@@ -1506,9 +1534,13 @@ export class MermaidCanvasView {
       return
     }
     if (e.key === 'Escape') {
+      e.preventDefault()
       if (this.tool === 'box-select') { this.setTool('select'); return }
       this.cancelConnect()
+      this.gestures.cancel()
+      this.clearLifelineUi()
       this.editor.clearSelection('canvas')
+      this.popover.hide()
       return
     }
     if (e.key === 'Enter' && this.editor.selection.length === 1) {

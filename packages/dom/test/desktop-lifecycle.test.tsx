@@ -36,6 +36,7 @@ beforeEach(() => {
     meStartupPath: disk.path,
     meOpen: vi.fn((id, path) => reply(id, path === disk.path ? { ...disk } : { ...chosen })),
     meCheck: vi.fn(id => reply(id, { ...disk })),
+    meWatch: vi.fn(async () => {}),
     meSave: vi.fn((id, snapshot) => {
       if (snapshot.diskHash !== disk.diskHash) {
         if (conflict === 'cancel') return reply(id, null)
@@ -93,6 +94,109 @@ it('dirty banner reload reads the latest disk bytes, and timer checks within fiv
   await click('file.reload')
   expect(editor.code).toBe(disk.code); expect(editor.canUndo).toBe(false)
   expect(new DraftStore().resume()).toBeNull()
+})
+
+it('a lost check reply expires and polling resumes within five seconds without focus', async () => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] })
+  await mount()
+  let lostId = 0
+  vi.mocked(shell.meCheck!).mockImplementationOnce(async id => { lostId = id })
+  await focus()
+  disk = file(base.replace('one', 'external'))
+  await act(async () => { await vi.advanceTimersByTimeAsync(4900) })
+  expect(editor.code).toBe(disk.code)
+  await act(async () => { shell.onMe!({ id: lostId, value: file(base) }) })
+  expect(editor.code).toBe(disk.code) // A late response cannot roll the file back.
+})
+
+it('native disk notifications reload without JS polling or focus and keep working after a read error', async () => {
+  await mount()
+  vi.mocked(shell.meCheck!).mockImplementationOnce(id => { shell.onMe!({ id, error: 'temporarily locked' }); return Promise.resolve() })
+  disk = file(base.replace('one', 'external'))
+  await act(async () => { shell.onMe!({ type: 'disk' }) })
+  expect(editor.code).toBe(base)
+  await act(async () => { shell.onMe!({ type: 'disk' }) })
+  expect(editor.code).toBe(disk.code)
+  disk = file(base.replace('one', 'another!'))
+  await act(async () => { shell.onMe!({ type: 'disk' }) })
+  expect(editor.code).toBe(disk.code)
+})
+
+it('an external write racing the save response is checked as soon as save finishes', async () => {
+  await mount(); await click('tb.addGroup')
+  let finish!: () => void
+  vi.mocked(shell.meSave).mockImplementationOnce((id, snapshot) => new Promise(resolve => {
+    finish = () => {
+      const saved = file(snapshot.code)
+      disk = file(snapshot.code.replace('one', 'after-save'))
+      shell.onMe!({ id, value: saved }); resolve()
+    }
+  }))
+  await click('tb.save')
+  await act(async () => { shell.onMe!({ type: 'focus' }) }) // skipped while saving
+  await act(async () => { finish() })
+  expect(editor.code).toBe(disk.code)
+  expect(document.title.endsWith(' *')).toBe(false)
+})
+
+it('a cancelled close resumes checking immediately after the modal decision', async () => {
+  await mount(); await click('tb.addGroup')
+  let finish!: () => void
+  vi.mocked(shell.meConfirmClose).mockImplementationOnce(id => new Promise(resolve => {
+    finish = () => { shell.onMe!({ id, value: 'cancel' }); resolve() }
+  }))
+  await close()
+  disk = file(base.replace('one', 'during-modal'))
+  await act(async () => { shell.onMe!({ type: 'disk' }) })
+  expect(host.querySelector('.file-conflict')).toBeNull()
+  await act(async () => { finish() })
+  expect(host.querySelector('.file-conflict')).not.toBeNull()
+  expect(editor.code).toContain('subgraph')
+  expect(shell.meFinishClose).not.toHaveBeenCalled()
+})
+
+it('polling continues through a dirty banner, keep-mine choice and existing toast', async () => {
+  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+  await mount(); await click('tb.addGroup')
+  const mine = editor.code
+  for (const label of ['first', 'second', 'third']) {
+    disk = file(base.replace('one', label))
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+    expect(editor.code).toBe(mine)
+    expect(host.querySelector('.file-conflict')).not.toBeNull()
+    await click('file.keepMine')
+  }
+})
+
+it('a stale check for the previous file cannot overwrite a newly opened document', async () => {
+  await mount()
+  let finish!: () => void
+  vi.mocked(shell.meCheck!).mockImplementationOnce(id => new Promise(resolve => {
+    finish = () => { shell.onMe!({ id, value: file(base.replace('one', 'stale')) }); resolve() }
+  }))
+  await focus()
+  chosen = file('flowchart LR\n X --> Y\n', 'new-file.mmd')
+  await act(async () => { shell.onMe!({ type: 'open', path: chosen.path! }) })
+  await act(async () => { finish() })
+  expect(editor.code).toBe(chosen.code)
+  expect(document.title).toContain('new-file.mmd')
+})
+
+it('native monitoring switches paths even for identical code and filenames', async () => {
+  await mount()
+  chosen = { ...disk, path: 'D:/other/orders.mmd' }
+  await act(async () => { shell.onMe!({ type: 'open', path: chosen.path! }) })
+  expect(shell.meWatch).toHaveBeenLastCalledWith(chosen.path, chosen.diskHash)
+})
+
+it('a failed reload does not acknowledge or consume the changed disk hash', async () => {
+  await mount()
+  disk = file(base.replace('one', 'retry-reload'))
+  vi.spyOn(crypto.subtle, 'digest').mockRejectedValueOnce(new Error('temporary hashing failure'))
+  await focus()
+  expect(editor.code).toBe(base)
+  await focus()
+  expect(editor.code).toBe(disk.code)
 })
 
 it.each(['discard', 'save', 'cancel'] as const)('close %s cleans drafts only when leaving succeeds', async choice => {

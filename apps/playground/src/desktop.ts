@@ -1,12 +1,13 @@
 import { t } from '../../../packages/dom/src/i18n'
 import type { EditorFile, FileAccess } from './files'
 
-type Reply = { id: number; value?: unknown; error?: string } | { type: 'open'; path: string } | { type: 'close' } | { type: 'focus' }
+type Reply = { id: number; value?: unknown; error?: string } | { type: 'open'; path: string } | { type: 'close' } | { type: 'focus' | 'disk' }
 export interface ShellBindings {
   meOpen(id: number, path: string, filter: string, allFiles: string): Promise<void>
   meSave(id: number, file: EditorFile, filter: string, allFiles: string, conflict: ConflictLabels): Promise<void>
   meSaveAs(id: number, file: EditorFile, filter: string, allFiles: string, conflict: ConflictLabels): Promise<void>
   meCheck?(id: number, path: string): Promise<void>
+  meWatch?(path: string, hash: string): Promise<void>
   meCopy(text: string): Promise<void>
   meLog(message: string): Promise<void>
   meState(title: string): Promise<void>
@@ -28,28 +29,39 @@ export class DesktopFiles implements FileAccess {
   readonly native = true
   readonly startupPath?: string
   private sequence = 0
-  private pending = new Map<number, { resolve(value: unknown): void; reject(error: Error): void }>()
+  private pending = new Map<number, { resolve(value: unknown): void; reject(error: Error): void; deadline?: number }>()
   private openListeners = new Set<(path: string) => void>()
   private closeListeners = new Set<() => void>()
   private focusListeners = new Set<() => void>()
   constructor(private host: ShellBindings) {
     this.startupPath = host.meStartupPath
     host.onMe = event => {
+      // Native ticks still arrive when WebView timers are throttled. Expire a
+      // missing check reply here too, before trying the next check.
+      for (const [id, request] of this.pending) if (request.deadline && Date.now() >= request.deadline) {
+        this.pending.delete(id); request.reject(new Error('File check timed out'))
+      }
       if ('id' in event) {
         const request = this.pending.get(event.id)
         this.pending.delete(event.id)
         if (event.error) request?.reject(new Error(event.error))
         else request?.resolve(event.value)
       } else if (event.type === 'open') for (const listener of this.openListeners) listener(event.path)
-      else if (event.type === 'focus') for (const listener of this.focusListeners) listener()
+      else if (event.type === 'focus' || event.type === 'disk') for (const listener of this.focusListeners) listener()
       else for (const listener of this.closeListeners) listener()
     }
   }
-  private request<T>(send: (id: number) => Promise<void>): Promise<T> {
+  private request<T>(send: (id: number) => Promise<void>, timeout?: number): Promise<T> {
     const id = ++this.sequence
     return new Promise<T>((resolve, reject) => {
-      this.pending.set(id, { resolve: value => resolve(value as T), reject })
-      void send(id).catch(error => { this.pending.delete(id); reject(error) })
+      const timer = timeout ? setTimeout(() => {
+        const request = this.pending.get(id); this.pending.delete(id)
+        request?.reject(new Error('File check timed out'))
+      }, timeout) : undefined
+      const finish = () => { if (timer !== undefined) clearTimeout(timer) }
+      this.pending.set(id, { resolve: value => { finish(); resolve(value as T) }, reject: error => { finish(); reject(error) },
+        deadline: timeout ? Date.now() + timeout : undefined })
+      void send(id).catch(error => { const request = this.pending.get(id); this.pending.delete(id); request?.reject(error) })
     })
   }
   open(path?: File | string): Promise<EditorFile | null> {
@@ -64,8 +76,9 @@ export class DesktopFiles implements FileAccess {
   copy(text: string): Promise<void> { return this.host.meCopy(text) }
   syncTitle(title: string): void { void this.host.meState(title) }
   check(path: string): Promise<EditorFile | null> {
-    return this.host.meCheck ? this.request(id => this.host.meCheck!(id, path)) : Promise.resolve(null)
+    return this.host.meCheck ? this.request(id => this.host.meCheck!(id, path), 2000) : Promise.resolve(null)
   }
+  watch(path: string, hash: string): void { void this.host.meWatch?.(path, hash) }
   confirmClose(name?: string, reason: 'close' | 'open' = 'close'): Promise<'save' | 'discard' | 'cancel'> {
     return this.request(id => this.host.meConfirmClose(id, closeLabels(name, reason)))
   }

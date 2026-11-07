@@ -11,7 +11,7 @@ export function createApplicationCases(root: string): [string, string, () => voi
     if (!application) {
       const output = join(root, 'out/cases/application.json')
       const run = spawnSync(process.execPath, [join(root, 'packages/dom/node_modules/vitest/vitest.mjs'), 'run',
-        'test/application.test.tsx', 'test/desktop-lifecycle.test.tsx', 'test/viewport.test.ts',
+        'test/application.test.tsx', 'test/desktop-lifecycle.test.tsx', 'test/viewport.test.ts', 'test/render-lifecycle.test.ts',
         '--reporter=json', `--outputFile=${output}`], { cwd: join(root, 'packages/dom'), encoding: 'utf8' })
       assert.equal(run.status, 0, run.stdout + run.stderr)
       application = JSON.parse(readFileSync(output, 'utf8'))
@@ -23,6 +23,11 @@ export function createApplicationCases(root: string): [string, string, () => voi
     const tests = suite().filter((test: any) => pattern.test(test.fullName))
     assert(tests.length > 0, `missing application assertions: ${pattern}`)
     assert(tests.every((test: any) => test.status === 'passed'))
+  }
+  const realFanStyles = () => {
+    const run = spawnSync(process.execPath, [join(root, 'packages/core/node_modules/vitest/vitest.mjs'), 'run', 'test/step6f.test.ts'],
+      { cwd: join(root, 'packages/core'), encoding: 'utf8' })
+    assert.equal(run.status, 0, run.stdout + run.stderr)
   }
   return [
     ['41', '真实 App：标题/星号及关闭的保存、不保存、取消；原生回车默认由 Go/Windows 验证', covered(/close .*cleans drafts/)],
@@ -42,5 +47,8 @@ export function createApplicationCases(root: string): [string, string, () => voi
     ['E1', '真实 Louvre SVG：自动 fit 最小 60%，溢出可滚动，手动缩放不受限', covered(/E1:/)],
     ['E2', '非流程图全部预览：含时序图、甘特图、饼图及类成员，隐藏画布操作且禁止新增', covered(/E2:/)],
     ['6d', '外部修改聚焦/定时检测、三项保存兜底、草稿清理及平移后的首次点击', covered(/focus reloads|timer checks|first edge press/)],
+    ['6f-selection', 'Esc、SVG 和画布留白取消选中，平移松手不误取消', covered(/clears selection and the style bar|pan release on/)],
+    ['6f-reload', '无焦点原生通知、超时/失败重试、弹框和保存竞态、切换监视路径、迟到回复与哈希确认、旧渲染失效', covered(/lost check reply|native disk notifications|external write racing|cancelled close resumes|polling continues|stale check|native monitoring switches|failed reload|returning to the displayed file/)],
+    ['6f-fan', '真实 Mermaid SVG：Louvre、两侧 &、链式、文字、平行边；边集合和其他颜色/粗细/线型不变', realFanStyles],
   ]
 }

@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { mkdir, readFile, writeFile, chmod } from 'node:fs/promises'
+import { mkdir, readFile, writeFile, chmod, stat, utimes } from 'node:fs/promises'
 import { resolve, join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
@@ -191,6 +191,47 @@ try {
   await evaluate(`document.querySelectorAll('.language-switch button')[0].click()`)
   await evaluate(`window.meCopy(${JSON.stringify('中文\u3000原生剪贴板\r\n')})`)
   check('中英切换与原生剪贴板调用')
+
+  // Remove every frontend interval and swallow both focus paths. Native Go
+  // polling must still detect same-size/same-mtime writes while CDP keeps
+  // reading window content (the reported 15:16 trigger).
+  await evaluate(`(() => {
+    const last = setInterval(() => {}, 60000);
+    for (let id=1; id<=last; id++) clearInterval(id);
+    window.__nativeOnMe = window.onMe;
+    window.onMe = event => { if(event.type !== 'focus') window.__nativeOnMe(event) };
+    window.__blockFocus = event => event.stopImmediatePropagation();
+    window.addEventListener('focus', window.__blockFocus, true);
+  })()`)
+  const pollBase = await readFile(path, 'utf8')
+  for (const [from, to] of [['起点', '原点'], ['原点', '起点']]) {
+    const fixedTime = new Date('2026-01-01T00:00:00Z')
+    await utimes(path, fixedTime, fixedTime)
+    const info = await stat(path), before = await readFile(path, 'utf8')
+    const after = before.replace(from, to)
+    assert.notEqual(after, before); assert.equal(Buffer.byteLength(after), Buffer.byteLength(before))
+    const start = Date.now()
+    await writeFile(path, after); await utimes(path, info.atime, info.mtime)
+    const restored = await stat(path)
+    assert.equal(restored.size, info.size); assert.equal(restored.mtimeMs, info.mtimeMs)
+    await waitUntil(() => evaluate(`document.querySelector('.cm-content')?.textContent.includes(${JSON.stringify(to)})`), '原生轮询无焦点/无 JS 计时器重载', 4900)
+    assert(Date.now() - start <= 5000)
+    check(`丢失焦点/禁用 JS 轮询/频繁读取窗口/同 size+mtime：${Date.now()-start} ms 内重载`)
+  }
+  assert.equal(await readFile(path, 'utf8'), pollBase)
+  // The native watcher must also recover a missing check reply; late replies
+  // must not keep the in-flight guard stuck.
+  await evaluate(`window.__nativeCheck=window.meCheck; window.__dropCheck=true;
+    window.__nativeTimeout=window.setTimeout; window.setTimeout=(fn,ms,...args)=>window.__nativeTimeout(fn,ms===2000?60000:ms,...args);
+    window.meCheck=(...args)=> { if(window.__dropCheck) {window.__dropCheck=false; return Promise.resolve()} return window.__nativeCheck(...args) }`)
+  const noReply = pollBase.replace('起点', '检测恢复')
+  const recoveryStart = Date.now(); await writeFile(path, noReply)
+  await waitUntil(() => evaluate(`document.querySelector('.cm-content')?.textContent.includes('检测恢复')`), '原生检查丢回复后恢复', 4900)
+  assert(Date.now()-recoveryStart <= 5000)
+  check(`丢失一次 meCheck 回复且其 JS 超时被节流后 ${Date.now()-recoveryStart} ms 内恢复`)
+  await writeFile(path, pollBase)
+  await waitUntil(() => evaluate(`document.querySelector('.cm-content')?.textContent.includes('起点')`), '恢复 smoke 原始内容', 4900)
+  await evaluate(`window.meCheck=window.__nativeCheck; window.setTimeout=window.__nativeTimeout; window.onMe=window.__nativeOnMe; window.removeEventListener('focus',window.__blockFocus,true)`)
 
   const external = (await readFile(path, 'utf8')).replace('起点', '外部起点')
   await writeFile(path, external)

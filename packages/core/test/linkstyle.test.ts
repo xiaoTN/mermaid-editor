@@ -126,6 +126,7 @@ describe('linkStyle index remapping', () => {
         const editor = new MermaidWysiwygEditor({ code })
         editor.dispatch({ type: 'setEdgeColor', edgeId: editor.result.flowchart!.edges[order].entityId, value })
         const after = code.replace('1 , 3\tstroke:green', `${order === 1 ? 3 : 1}\tstroke:green`)
+          .replace('A[甲] & B[乙] --> C{判断}', order === 1 ? 'A[甲] --> C{判断}\n    B[乙] --> C' : 'A[甲] & B[乙] --> C{判断}')
         const expected = value === null ? after : after.trimEnd() + `\n    linkStyle ${order} stroke:orange,stroke-width:2px\n`
         expectUndoRedo(editor, code, expected)
       }
