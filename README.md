@@ -32,7 +32,7 @@ pnpm --filter playground dev --host 127.0.0.1 --port 5174
 
 使用 Codex 时，也可以点击项目里的“启动编辑器”操作，它使用 `5174` 端口。
 
-把下面的内容粘贴到源码区，即可开始编辑：
+将下面的示例粘贴到源码区，即可开始编辑：
 
 ```mermaid
 flowchart LR
