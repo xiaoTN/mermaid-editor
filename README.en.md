@@ -98,7 +98,7 @@ The desktop app uses Go and WebView2 and builds to `dist/mermaid-editor.exe`. Do
 | Save | `Ctrl+S` |
 | Save as | `Ctrl+Shift+S` |
 
-Build it in Windows PowerShell:
+Build it in Windows PowerShell. You need the Go toolchain (the script uses Go 1.24.4) and the frontend dependencies:
 
 ```powershell
 pnpm install

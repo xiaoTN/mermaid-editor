@@ -98,7 +98,7 @@ flowchart TD
 | 保存 | `Ctrl+S` |
 | 另存为 | `Ctrl+Shift+S` |
 
-在 Windows PowerShell 中构建：
+在 Windows PowerShell 中构建，需要先准备 Go 工具链（脚本使用 Go 1.24.4）和前端依赖：
 
 ```powershell
 pnpm install
