@@ -100,3 +100,35 @@ it.each([false, true])('平移后首次点击仍能选中边，无论松开时�
   expect(edge.classList.contains('mw-selected')).toBe(true)
   expect(editor.code).toBe(code); expect(editor.canUndo).toBe(false)
 })
+
+it.each(['host', 'padding', 'svg', 'escape'])('clears selection and the style bar on %s', target => {
+  pointer(host.querySelector('[data-mw-entity="node:floor"]')!, 'click')
+  expect(host.querySelector('.mw-popover')).not.toBeNull()
+  if (target === 'escape') host.querySelector<HTMLButtonElement>('.mw-popover button')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+  else pointer(target === 'host' ? host : host.querySelector(target === 'padding' ? '.mw-svg-host' : 'svg')!, 'click')
+  expect(editor.selection).toEqual([])
+  expect(host.querySelector('.mw-popover')).toBeNull()
+  expect(editor.code).toBe(code); expect(editor.canUndo).toBe(false)
+})
+
+it.each(['host', 'padding', 'svg'])('pan release on %s keeps selection, next blank click clears it', target => {
+  pointer(host.querySelector('[data-mw-entity="node:floor"]')!, 'click')
+  const blank = target === 'host' ? host : host.querySelector(target === 'padding' ? '.mw-svg-host' : 'svg')!
+  pointer(host.querySelector('svg')!, 'pointerdown'); pointer(host, 'pointermove', 90); pointer(host, 'pointerup', 90)
+  pointer(blank, 'click', 90)
+  expect(editor.selection).toEqual(['node:floor'])
+  pointer(blank, 'pointerdown'); pointer(blank, 'pointerup'); pointer(blank, 'click')
+  expect(editor.selection).toEqual([])
+})
+
+it('Escape in the canvas label editor also clears selection and the style bar', () => {
+  pointer(host.querySelector('[data-mw-entity="node:floor"]')!, 'click')
+  view.editEntityLabel('node:floor')
+  const input = host.querySelector('[contenteditable="true"]')!
+  expect(input).not.toBeNull()
+  input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+  expect(editor.selection).toEqual([])
+  expect(host.querySelector('.mw-popover')).toBeNull()
+  expect(host.querySelector('[contenteditable="true"]')).toBeNull()
+  expect(editor.code).toBe(code)
+})

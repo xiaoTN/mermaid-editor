@@ -59,8 +59,10 @@ export function createDomCases(directory: string): [string, string, (document: D
       expected[index].line = 'dotted'
     } else if (action === 'color') {
       editor.dispatch({ type: 'setEdgeColor', edgeId, value: '#123abc' })
-      assert.equal(editor.code, code.replace(/\n?$/, `\n    linkStyle ${selected.order} stroke:#123abc,stroke-width:2px\n`),
-        '只允许新增指向选中边源码序号的 linkStyle')
+      const styled = editor.result.flowchart!.edges.find(e => e.entityId === edgeId)!
+      const added = `\n    linkStyle ${styled.order} stroke:#123abc,stroke-width:2px\n`
+      assert(editor.code.endsWith(added), 'linkStyle 必须指向拆行后选中边的源码序号')
+      assertOnlyReplacesLine(code, editor.code.slice(0, -added.length) + '\n', selected.lineIndex + 1)
     } else if (action === 'label') {
       editor.dispatch({ type: 'setEdgeLabel', edgeId, label: '只改这一条' })
       expected[index].label = '只改这一条'
@@ -68,7 +70,10 @@ export function createDomCases(directory: string): [string, string, (document: D
       editor.dispatch({ type: 'retargetEdge', edgeId, end: action, nodeId: 'output' })
       expected[index][action] = 'output'
     }
-    assert.deepEqual(editor.result.flowchart!.edges.map(signature), expected, '只能影响选中的一条边，其他边及顺序必须不变')
+    const actual = editor.result.flowchart!.edges.map(signature)
+    const semantic = (edges: typeof expected) => edges.map(e => JSON.stringify(e)).sort()
+    if (['style', 'label', 'color'].includes(action)) assert.deepEqual(semantic(actual), semantic(expected), '只能影响选中的一条边，边集合不变')
+    else assert.deepEqual(actual, expected, '只能影响选中的一条边，其他边及顺序必须不变')
     if (action !== 'color') assertOnlyReplacesLine(code, editor.code, selected.lineIndex + 1)
     if (name === 'louvre' && selected.source === 'entry' && selected.target === 'layout' && action === 'delete') {
       assert.equal(editor.code, code.replace('entry --> layout & hard', 'entry --> hard'))

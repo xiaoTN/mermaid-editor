@@ -67,11 +67,52 @@ try {
   await waitUntil(() => evaluate(`document.querySelectorAll('path.flowchart-link').length === 37`), 'Louvre 完整渲染')
   await evaluate('window.meCopy = async text => { window.__copiedCode = text }')
   assert.equal(await copiedCode(), code)
+  const selectFloor = () => evaluate(`document.querySelector('[data-mw-entity="node:floor"]').dispatchEvent(new MouseEvent('click',{bubbles:true}))`)
+  await selectFloor()
+  assert(await evaluate(`!!document.querySelector('.mw-popover')`))
+  await cdp('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
+  await cdp('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 })
+  assert.equal(await evaluate(`document.querySelectorAll('.mw-selected,.mw-popover').length`), 0)
+  for (const background of ['.canvas', '.mw-svg-host', '.canvas svg']) {
+    await selectFloor()
+    await evaluate(`document.querySelector(${JSON.stringify(background)}).dispatchEvent(new MouseEvent('click',{bubbles:true}))`)
+    assert.equal(await evaluate(`document.querySelectorAll('.mw-selected,.mw-popover').length`), 0)
+    await selectFloor()
+    await evaluate(`(() => {
+      const svg=document.querySelector('.canvas svg'), host=document.querySelector('.canvas');
+      svg.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,button:0,clientX:10,clientY:10,pointerId:1}));
+      host.dispatchEvent(new PointerEvent('pointermove',{bubbles:true,clientX:90,clientY:10,pointerId:1}));
+      host.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,clientX:90,clientY:10,pointerId:1}));
+      document.querySelector(${JSON.stringify(background)}).dispatchEvent(new MouseEvent('click',{bubbles:true}));
+    })()`)
+    assert(await evaluate(`!!document.querySelector('[data-mw-entity="node:floor"].mw-selected')`))
+    await evaluate(`(() => {
+      const blank=document.querySelector(${JSON.stringify(background)});
+      blank.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,button:0,pointerId:1}));
+      blank.dispatchEvent(new PointerEvent('pointerup',{bubbles:true,button:0,pointerId:1}));
+      blank.dispatchEvent(new MouseEvent('click',{bubbles:true}));
+    })()`)
+    assert.equal(await evaluate(`document.querySelectorAll('.mw-selected,.mw-popover').length`), 0)
+  }
+  await click('适应画布')
+  console.log('通过：真实 WebView2 Esc、画布/SVG 留白取消选中，平移松手保留选中，下一次空白点击取消')
+  const edgeStyles = () => evaluate(`Object.fromEntries([...document.querySelectorAll('path.flowchart-link')].map(path => {
+    const style=getComputedStyle(path);
+    return [path.getAttribute('data-id'), {stroke:style.stroke,width:style.strokeWidth,dash:style.strokeDasharray,
+      pattern:[...path.classList].filter(c=>/edge-pattern|edge-thickness/.test(c)).sort().join(' ')}];
+  }))`)
+  const originalStyles = await edgeStyles()
+  const waitForOriginalSvg = () => waitUntil(async () => {
+    assert.deepEqual(await edgeStyles(), originalStyles)
+    return true
+  }, '撤销后边集合及全部原始样式完成重绘')
   for (const pair of ['entry->layout', 'goods->decor', 'decor->assembly', 'select->floor', 'floor->result', 'primary->ai']) {
     const edge = graph.edges.find(e => `${e.source}->${e.target}` === pair)!
     for (const action of ['delete', 'style', 'source', 'target']) {
       const nativeId = `L_${edge.source}_${edge.target}_0`
+      await waitForOriginalSvg()
       await waitUntil(() => evaluate(`!!document.querySelector('path.flowchart-link[data-id=${JSON.stringify(nativeId)}]')`), '原图重新渲染')
+      const beforeStyles = action === 'style' ? await edgeStyles() : null
       await evaluate(`document.querySelector('path.flowchart-link[data-id=${JSON.stringify(nativeId)}]').dispatchEvent(new MouseEvent('click', {bubbles:true}))`)
       assert.equal(await evaluate(`document.querySelector('path.flowchart-link.mw-selected')?.getAttribute('data-mw-entity')`), edge.entityId)
       try { await waitUntil(() => evaluate(`Array.from(document.querySelectorAll('.mw-cm-selected-line')).some(el => {
@@ -109,11 +150,22 @@ try {
       else if (action === 'style') expected[edge.order][2] = 'dotted'
       else expected[edge.order][action === 'source' ? 0 : 1] = 'output'
       const actual = new MermaidWysiwygEditor({ code: after }).result.flowchart!
-      assert.deepEqual(actual.edges.map(e => [e.source, e.target, e.seg.line]), expected)
+      assert.deepEqual(actual.edges.map(e => [e.source, e.target, e.seg.line]).sort(), expected.sort())
+      if (action === 'style') {
+        await waitUntil(() => evaluate(`!!document.querySelector('path.flowchart-link.edge-pattern-dotted[data-id=${JSON.stringify(nativeId)}]')`), '选中边线型实际重绘')
+        const afterStyles = await edgeStyles()
+        assert.deepEqual(Object.keys(afterStyles).sort(), Object.keys(beforeStyles!).sort())
+        for (const [id, style] of Object.entries(beforeStyles!)) {
+          if (id === nativeId) assert.notDeepEqual(afterStyles[id], style)
+          else assert.deepEqual(afterStyles[id], style, `其他边样式不得变化：${id}`)
+        }
+        if (pair === 'floor->result') assert.equal(after, code.replace('tabletop & bedside & central & wallart & floor & slippers --> result',
+          'tabletop & bedside & central & wallart & slippers --> result\n            floor -.-> result'))
+      }
       if (pair === 'entry->layout' && action === 'delete') assert.equal(after, code.replace('entry --> layout & hard', 'entry --> hard'))
       await click('撤销')
       assert.equal(await copiedCode(), code)
-      await waitUntil(() => evaluate(`document.querySelectorAll('path.flowchart-link').length === 37`), '撤销后的原图')
+      await waitForOriginalSvg()
       await evaluate(`document.querySelector('.canvas svg').dispatchEvent(new MouseEvent('click', {bubbles:true}))`)
       assert.equal(await evaluate(`document.querySelectorAll('.mw-cm-selected-line').length`), 0)
     }

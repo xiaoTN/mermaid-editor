@@ -8,7 +8,8 @@ describe('画布工具栏', () => {
     const id = 'edge:B->D#0'
     editor.dispatch({ type: 'setEdgeStyle', edgeId: id, line: 'thick', preserveLabelForm: true })
     expect(editor.code).toBe(code.replace('A[甲] & B(乙) -.  文字  .-> C{丙} & D[丁]',
-      'A[甲] -.  文字  .-> C{丙}\r\n\tA[甲] -.  文字  .-> D[丁]\r\n\tB(乙) -.  文字  .-> C{丙}\r\n\tB(乙) ==  文字  ==> D[丁]'))
+      'A[甲] -.  文字  .-> C{丙} & D[丁]\r\n\tB(乙) -.  文字  .-> C{丙}')
+      .replace('; X;  %% 保留\r\n', '; X;  %% 保留\r\n\tB ==  文字  ==> D\r\n'))
     expect(editor.result.flowchart!.edges.map(e => [e.source, e.target, e.seg.line])).toEqual([
       ['A', 'C', 'dotted'], ['A', 'D', 'dotted'], ['B', 'C', 'dotted'], ['B', 'D', 'thick'],
     ])

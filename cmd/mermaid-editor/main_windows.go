@@ -28,6 +28,7 @@ type app struct {
 	ready       bool
 	allowClose  bool
 	pendingPath string
+	watcher     files.Watcher
 }
 
 type reply struct {
@@ -97,8 +98,9 @@ func (a *app) bind() {
 		})
 	})
 	bind("meCheck", func(id int, path string) {
-		a.w.Dispatch(func() { doc, err := files.Read(path); a.answer(id, doc, err) })
+		go func() { doc, err := files.Read(path); a.answer(id, doc, err) }()
 	})
+	bind("meWatch", func(path, hash string) { a.watcher.Set(path, hash) })
 	save := func(id int, doc files.Document, filter, allFiles string, labels conflictLabels, saveAs bool) {
 		a.w.Dispatch(func() {
 			path := doc.Path
@@ -202,6 +204,15 @@ func main() {
 		exitNow(1)
 	}
 	a := &app{w: w}
+	go func() {
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			if changed, err := a.watcher.Changed(); changed || err != nil {
+				a.emit(map[string]string{"type": "disk"})
+			}
+		}
+	}()
 	if len(os.Args) > 1 {
 		a.pendingPath, _ = filepath.Abs(os.Args[1])
 	}

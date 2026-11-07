@@ -227,7 +227,6 @@ function rebuildChain(
     dropNodeId?: string
     dropEdge?: { segIndex: number; source: string; target: string }
     retarget?: { edge: FlowEdge; end: 'source' | 'target'; nodeId: string }
-    segment?: { edge: FlowEdge; text: string }
   },
 ): string[] {
   // A fan is authored as one list. Remove just the member and its adjacent
@@ -304,7 +303,7 @@ function rebuildChain(
     return true
   })
 
-  if (kept.length === expanded.length && !opts.dropNodeId && !opts.retarget && !opts.segment) return [slice(ctx, chain.span)]
+  if (kept.length === expanded.length && !opts.dropNodeId && !opts.retarget) return [slice(ctx, chain.span)]
 
   const survivors = new Set<NodeRef>()
   for (const e of kept) {
@@ -325,10 +324,7 @@ function rebuildChain(
     const refText = (ref: NodeRef | string) => typeof ref === 'string' ? ref : slice(ctx, ref.span)
     const seg = chain.edges[e.segIndex]
     const segStart = seg.idSpan?.start ?? seg.span.start
-    const replacement = opts.segment
-    const segText = replacement && e.segIndex === replacement.edge.segIndex &&
-      e.a === replacement.edge.sourceRef && e.b === replacement.edge.targetRef
-      ? replacement.text : slice(ctx, { start: segStart, end: seg.span.end })
+    const segText = slice(ctx, { start: segStart, end: seg.span.end })
     const sourceGroup = chain.groups[e.segIndex]
     const before = slice(ctx, { start: sourceGroup[sourceGroup.length - 1].span.end, end: segStart })
     const after = slice(ctx, { start: seg.span.end, end: chain.groups[e.segIndex + 1][0].span.start })
@@ -367,10 +363,11 @@ function findEdge(graph: FlowGraph, edgeId: string): FlowEdge | null {
   return graph.edges.find((e) => e.entityId === edgeId) ?? null
 }
 
-/** A fan shares one operator span; expand only its statement before editing
- * one semantic edge. Retain source edge order so linkStyle needs no remap. */
-function segmentEdits(ctx: FlowOpContext, edge: FlowEdge, edits: TextEdit[]): OpResult {
-  if (edits.every(edit => ctx.code.slice(edit.start, edit.end) === edit.text)) return { edits: [] }
+/** Subtract one cell from a fan, keeping all remaining lists and chain
+ * segments in their authored form. Track original occurrences explicitly:
+ * identical parallel edges cannot be matched by endpoints after reordering. */
+function segmentEdits(ctx: FlowOpContext, edge: FlowEdge, edits: TextEdit[], isolate = false): OpResult & { isolatedOrder?: number } {
+  if (!isolate && edits.every(edit => ctx.code.slice(edit.start, edit.end) === edit.text)) return { edits: [] }
   const shared = ctx.graph.edges.some(other => other !== edge && other.seg === edge.seg)
   if (!shared) return { edits }
   const stmt = ctx.graph.statements.get(edge.lineIndex)?.[edge.stmtIndex]
@@ -378,8 +375,52 @@ function segmentEdits(ctx: FlowOpContext, edge: FlowEdge, edits: TextEdit[]): Op
   const start = edge.seg.idSpan?.start ?? edge.seg.span.start
   const text = applyEdits(ctx.code.slice(start, edge.seg.span.end),
     edits.map(edit => ({ ...edit, start: edit.start - start, end: edit.end - start }))).text
-  const replacement = rebuildChain(ctx, edge.lineIndex, stmt, { segment: { edge, text } })
-  return { edits: statementEdits(ctx, new Map([[stmt, replacement]])) }
+  const i = edge.segIndex, left = stmt.groups[i], right = stmt.groups[i + 1]
+  const own = ctx.graph.edges.filter(e => e.lineIndex === edge.lineIndex && e.stmtIndex === edge.stmtIndex)
+  const replacement: string[] = [], orders: number[] = []
+  const add = (raw: string, edges: FlowEdge[]) => { replacement.push(raw); orders.push(...edges.map(e => e.order)) }
+  const groupText = (group: NodeRef[], omit?: NodeRef) => {
+    const raw = slice(ctx, { start: group[0].span.start, end: group[group.length - 1].span.end })
+    if (!omit) return raw
+    const n = group.indexOf(omit)
+    const from = n < group.length - 1 ? omit.span.start : group[n - 1].span.end
+    const to = n < group.length - 1 ? group[n + 1].span.start : omit.span.end
+    return raw.slice(0, from - group[0].span.start) + raw.slice(to - group[0].span.start)
+  }
+  const prefix = slice(ctx, { start: stmt.span.start, end: left[0].span.start })
+  const suffix = slice(ctx, { start: right[right.length - 1].span.end, end: stmt.span.end })
+  const segment = slice(ctx, { start: left[left.length - 1].span.end, end: right[0].span.start })
+  const before = own.filter(e => e.segIndex < i), after = own.filter(e => e.segIndex > i)
+  if (i > 0 && left.length > 1) add(prefix + groupText(left), before)
+  if (left.length > 1) {
+    add(groupText(left, edge.sourceRef) + segment + groupText(right) + (right.length === 1 ? suffix : ''),
+      [...own.filter(e => e.segIndex === i && e.sourceRef !== edge.sourceRef), ...(right.length === 1 ? after : [])])
+  }
+  if (right.length > 1) {
+    add((left.length === 1 ? prefix : '') + slice(ctx, edge.sourceRef.span) + segment + groupText(right, edge.targetRef),
+      [...(left.length === 1 ? before : []), ...own.filter(e => e.segIndex === i && e.sourceRef === edge.sourceRef && e.targetRef !== edge.targetRef)])
+  }
+  if (i < stmt.edges.length - 1 && right.length > 1) add(groupText(right) + suffix, after)
+  const gapBefore = slice(ctx, { start: left[left.length - 1].span.end, end: start })
+  const gapAfter = slice(ctx, { start: edge.seg.span.end, end: right[0].span.start })
+  // Extracted refs have already retained their declarations in the remaining
+  // lists, except for a member removed entirely from a one-sided fan.
+  const source = left.length > 1 && right.length === 1 ? slice(ctx, edge.sourceRef.span) : edge.source
+  const target = right.length > 1 && left.length === 1 ? slice(ctx, edge.targetRef.span) : edge.target
+  // Insert below the physical line, so its comments and other semicolon
+  // statements stay with the authored remainder rather than the new edge.
+  const extra = insertLinesAfter(ctx, edge.lineIndex, [ctx.lines[edge.lineIndex].indent + source + gapBefore + text + gapAfter + target])
+  const reordered: number[] = []
+  let inserted = false
+  for (const previous of ctx.graph.edges) {
+    if (!inserted && previous.seg.span.start >= extra.start) { reordered.push(edge.order); inserted = true }
+    if (previous === own[0]) reordered.push(...orders)
+    if (!own.includes(previous)) reordered.push(previous.order)
+  }
+  if (!inserted) reordered.push(edge.order)
+  const map = new Map(reordered.map((old, n) => [old, n]))
+  const changes: StatementChanges = new Map([[stmt, replacement]])
+  return { edits: [...statementEdits(ctx, renumberLinkStyles(ctx, n => map.get(n) ?? n, changes)), extra], isolatedOrder: map.get(edge.order) }
 }
 
 const LINK_STYLE_INDICES = /^(\s*linkStyle\s+)(\d+(?:\s*,\s*\d+)*)(?=\s)/
@@ -943,6 +984,17 @@ export function compileFlowchartOp(ctx: FlowOpContext, op: FlowchartOp): OpResul
     case 'setEdgeColor': {
       const edge = findEdge(graph, op.edgeId)
       if (!edge) return null
+      if (graph.edges.some(other => other !== edge && other.seg === edge.seg)) {
+        const split = segmentEdits(ctx, edge, [], true)
+        const code = applyEdits(ctx.code, split.edits).text
+        const lines = scanLines(code), { headerIndex } = classifyLines(lines)
+        const next = buildFlowGraph(lines, headerIndex)
+        const isolated = next.edges[split.isolatedOrder!]
+        const color = compileFlowchartOp({ code, lines, graph: next }, { ...op, edgeId: isolated.entityId })!
+        const finalCode = applyEdits(code, color.edits).text
+        const diff = diffText(ctx.code, finalCode)
+        return { edits: diff ? [diff] : [] }
+      }
       // linkStyle addresses edges by source order, not SVG paint order.
       let linkStmt: FlowStmt | undefined
       let shared = false

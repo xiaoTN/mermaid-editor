@@ -207,6 +207,7 @@ describe('in-place label editing survives the live-commit re-render', () => {
   })
 
   it('Escape mid-session reverts live-committed intermediate states', async () => {
+    editor.setSelection(['node:A'], 'canvas')
     view.editEntityLabel('node:A')
     const label = labelOf(container, 'node:A')
     typeInto(label, 'Half typed')
@@ -222,5 +223,7 @@ describe('in-place label editing survives the live-commit re-render', () => {
     // the canvas label must revert too — the reverted code can equal the last
     // rendered code, in which case no re-render will repaint it
     expect(labelOf(container, 'node:A').textContent).toBe('Write a doc')
+    expect(editor.selection).toEqual([])
+    expect(container.querySelector('.mw-popover')).toBeNull()
   })
 })

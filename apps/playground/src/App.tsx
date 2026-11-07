@@ -77,6 +77,7 @@ export default function App({ fileAccess = desktop ?? browserFiles }: { fileAcce
   const dirty = code !== baseline
   const changed = useMemo(() => diskChangedLines(baseline, code), [baseline, code])
   const displayName = untitled ? t('app.untitled') : filename
+  const watchFile = (file: EditorFile) => native?.watch(file.untitled ? '' : file.path ?? '', file.diskHash ?? '')
 
   useEffect(() => {
     document.documentElement.lang = locale
@@ -95,6 +96,10 @@ export default function App({ fileAccess = desktop ?? browserFiles }: { fileAcce
   useEffect(() => {
     if (ready) { session.current?.edit(code); setPrompt(session.current?.prompt ?? null) }
   }, [code, ready])
+  useEffect(() => {
+    const file = session.current?.snapshot
+    native?.watch(file?.untitled ? '' : file?.path ?? '', observedHash.current || file?.diskHash || '')
+  }, [native, ready, baseline, filename, untitled])
   useEffect(() => {
     if (!canvas.current) return
     const next = new MermaidCanvasView({ editor, container: canvas.current, mermaid,
@@ -124,11 +129,14 @@ export default function App({ fileAccess = desktop ?? browserFiles }: { fileAcce
     if (expectedCode !== undefined && editor.code !== expectedCode) {
       current?.edit(editor.code)
       await current?.observeDisk(file)
+      if (session.current !== current || version !== fileVersion.current) return false
+      observedHash.current = file.diskHash ?? ''; updateBaseline(file.code); watchFile(file)
       setOutside(file)
       return false
     }
     current?.discard()
     session.current = next; observedHash.current = file.diskHash ?? ''
+    watchFile(file)
     updateBaseline(file.code); setOutside(null); setPrompt(null)
     editor.loadCode(file.code)
     return true
@@ -141,15 +149,15 @@ export default function App({ fileAccess = desktop ?? browserFiles }: { fileAcce
       const disk = await native.check(path)
       if (!disk || current !== session.current || version !== fileVersion.current || saving.current) return
       const previousHash = observedHash.current || current?.snapshot.diskHash
-      if (disk.diskHash === previousHash) return
-      observedHash.current = disk.diskHash ?? ''
+      if (disk.diskHash === previousHash) { watchFile(disk); return }
       const wasDirty = editor.code !== diskCode.current
-      updateBaseline(disk.code)
       if (!wasDirty || editor.code === disk.code) {
         if (await reload(disk, editor.code)) setToast({ key: 'file.reloaded' })
       } else {
         current?.edit(editor.code)
         await current?.observeDisk(disk)
+        if (current !== session.current || version !== fileVersion.current) return
+        observedHash.current = disk.diskHash ?? ''; updateBaseline(disk.code); watchFile(disk)
         setOutside(disk)
       }
     } catch (error) { setToast({ key: 'err.open', reason: error instanceof Error ? error.message : String(error) }) }
@@ -168,6 +176,7 @@ export default function App({ fileAccess = desktop ?? browserFiles }: { fileAcce
       if (version !== fileVersion.current) return
       session.current = nextSession; setReady(true)
       observedHash.current = opened.diskHash ?? ''
+      watchFile(opened)
       updateBaseline(opened.code); setOutside(null); setUntitled(false); setPrompt(nextSession.prompt)
       view.current?.fitView()
       editor.loadCode(opened.code)
@@ -214,6 +223,7 @@ export default function App({ fileAccess = desktop ?? browserFiles }: { fileAcce
       if (session.current === current) {
         updateBaseline(savedCode); setUntitled(false); setFilename(saved?.name ?? displayName)
         observedHash.current = saved?.diskHash ?? ''; setOutside(null); setPrompt(null); setToast(null)
+        watchFile(saved ?? { ...snapshot, untitled: false })
       }
       return session.current === current && editor.code === savedCode
     }
@@ -221,7 +231,7 @@ export default function App({ fileAccess = desktop ?? browserFiles }: { fileAcce
   }
   const save = (saveAs = false): Promise<boolean> => {
     if (saving.current) return saving.current
-    saving.current = performSave(saveAs).finally(() => { saving.current = null })
+    saving.current = performSave(saveAs).finally(() => { saving.current = null; void actions.current.check() })
     return saving.current
   }
   const copy = async () => {
@@ -234,7 +244,7 @@ export default function App({ fileAccess = desktop ?? browserFiles }: { fileAcce
       if (closing.current) return
       closing.current = true
       void Promise.resolve(checking.current).then(() => mayLeave('close')).then(allowed => { if (allowed) native?.finishClose() })
-        .finally(() => { closing.current = false })
+        .finally(() => { closing.current = false; void actions.current.check() })
     },
     check: () => {
       if (!checking.current) checking.current = checkOutside().finally(() => { checking.current = null })
@@ -248,10 +258,12 @@ export default function App({ fileAccess = desktop ?? browserFiles }: { fileAcce
     const focus = () => { void actions.current.check() }
     const offFocus = native.onFocus(focus)
     window.addEventListener('focus', focus)
-    const timer = setInterval(focus, 3000)
+    const visible = () => { if (document.visibilityState === 'visible') focus() }
+    document.addEventListener('visibilitychange', visible)
+    const timer = setInterval(focus, 1000)
     native.ready()
     if (!fileAccess.startupPath && resumed && !resumed.snapshot.untitled) actions.current.open(resumed.path)
-    return () => { offOpen(); offClose(); offFocus(); window.removeEventListener('focus', focus); clearInterval(timer) }
+    return () => { offOpen(); offClose(); offFocus(); window.removeEventListener('focus', focus); document.removeEventListener('visibilitychange', visible); clearInterval(timer); native.watch('', '') }
   }, [native])
   useEffect(() => {
     const key = (event: KeyboardEvent) => {
