@@ -90,6 +90,12 @@ it('E1：Louvre 大图至少按 60% 显示，初始位置可触达且支持滚�
   view.fitView(); expect(svg.style.transform).toContain('scale(0.6)')
 })
 
+it('图形自己的边框不能裁掉拖进可见空白处的节点，仍由外层画布控制裁切', () => {
+  const svg = host.querySelector<SVGSVGElement>('.mw-svg-host > svg')!
+  expect(getComputedStyle(svg).overflow).toBe('visible')
+  expect(getComputedStyle(host).overflow).toBe('hidden')
+})
+
 it.each([false, true])('平移后首次点击仍能选中边，无论松开时的点击是否落到 SVG：%s', releaseClick => {
   const svg = host.querySelector('svg')!
   pointer(svg, 'pointerdown'); pointer(host, 'pointermove', 90); pointer(host, 'pointerup', 90)
@@ -114,11 +120,52 @@ it.each(['host', 'padding', 'svg', 'escape'])('clears selection and the style ba
 it.each(['host', 'padding', 'svg'])('pan release on %s keeps selection, next blank click clears it', target => {
   pointer(host.querySelector('[data-mw-entity="node:floor"]')!, 'click')
   const blank = target === 'host' ? host : host.querySelector(target === 'padding' ? '.mw-svg-host' : 'svg')!
-  pointer(host.querySelector('svg')!, 'pointerdown'); pointer(host, 'pointermove', 90); pointer(host, 'pointerup', 90)
+  pointer(host.querySelector('svg')!, 'pointerdown')
+  expect(editor.selection).toEqual(['node:floor'])
+  pointer(host, 'pointermove', 90); pointer(host, 'pointerup', 90)
+  expect(editor.selection).toEqual(['node:floor'])
   pointer(blank, 'click', 90)
   expect(editor.selection).toEqual(['node:floor'])
   pointer(blank, 'pointerdown'); pointer(blank, 'pointerup'); pointer(blank, 'click')
   expect(editor.selection).toEqual([])
+  expect(editor.code).toBe(code); expect(editor.canUndo).toBe(false)
+})
+
+it.each([false, true])('without a pan-release click, the next blank click still clears selection (readOnly=%s)', readOnly => {
+  pointer(host.querySelector('[data-mw-entity="node:floor"]')!, 'click')
+  view.setReadOnly(readOnly)
+  const blank = host.querySelector('svg')!
+  pointer(blank, 'pointerdown'); pointer(host, 'pointermove', 90); pointer(host, 'pointerup', 90)
+  expect(editor.selection).toEqual(['node:floor'])
+  pointer(blank, 'pointerdown'); pointer(blank, 'pointerup'); pointer(blank, 'click')
+  expect(editor.selection).toEqual([])
+})
+
+it.each(['.mw-svg-host', 'svg'])('read-only pan starting at %s preserves selection through release', selector => {
+  pointer(host.querySelector('[data-mw-entity="node:floor"]')!, 'click')
+  view.setReadOnly(true)
+  const blank = host.querySelector(selector)!
+  pointer(blank, 'pointerdown'); pointer(host, 'pointermove', 90); pointer(host, 'pointerup', 90)
+  pointer(blank, 'click', 90)
+  expect(editor.selection).toEqual(['node:floor'])
+  pointer(blank, 'pointerdown'); pointer(blank, 'pointerup'); pointer(blank, 'click')
+  expect(editor.selection).toEqual([])
+})
+
+it('a cancelled pan does not prevent the next blank click from clearing selection', () => {
+  pointer(host.querySelector('[data-mw-entity="node:floor"]')!, 'click')
+  const blank = host.querySelector('svg')!
+  pointer(blank, 'pointerdown'); pointer(host, 'pointermove', 90); pointer(host, 'pointercancel', 90)
+  expect(editor.selection).toEqual(['node:floor'])
+  pointer(blank, 'pointerdown'); pointer(blank, 'pointerup'); pointer(blank, 'click')
+  expect(editor.selection).toEqual([])
+})
+
+it('pressing outside the canvas still clears selection immediately', () => {
+  pointer(host.querySelector('[data-mw-entity="node:floor"]')!, 'click')
+  pointer(document.body, 'pointerdown')
+  expect(editor.selection).toEqual([])
+  expect(host.querySelector('.mw-popover')).toBeNull()
 })
 
 it('Escape in the canvas label editor also clears selection and the style bar', () => {

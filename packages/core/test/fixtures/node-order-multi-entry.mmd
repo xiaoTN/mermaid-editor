@@ -1,0 +1,52 @@
+---
+config:
+  flowchart:
+    nodeSpacing: 24
+    rankSpacing: 24
+---
+flowchart LR
+    A([开始体验])
+    subgraph intake[接单分组]
+      B["提交订单<br/>双击这里改字"]
+      C{库存充足？}
+      D(通知补货)
+    end
+    subgraph payment[支付分组]
+      E[[发起支付]]
+      F{{风控校验}}
+      subgraph fulfillment[履约分组]
+        G[(订单数据库)]
+        H((订单完成))
+          n1[hi]
+      end
+    end
+    I[人工处理]
+    J[练习用节点]
+    K[短信通知]
+    L[站内通知]
+    A --> B
+    B --> C
+    C -->|有货| E
+    C -.->|缺货| D
+    E ==>|支付成功| F
+    F -->|通过| G
+    G --> H
+    D --x I
+    F --o I
+    I <-->|双向沟通| J
+    H --- J
+    intake -.->|分组连线| payment
+    H --> L
+    H --> K
+    classDef normal fill:#eff6ff,stroke:#315fd6,color:#25334a
+    classDef warning fill:#fff4d6,stroke:#b7791f,color:#713f12
+    classDef success fill:#e9f8ef,stroke:#218359,color:#14532d
+    class A,B,E,G normal
+    class C,D,F warning
+    class H success
+    style I fill:#fff1f2,stroke:#be123c,color:#881337
+    style intake fill:#f8fafc,stroke:#94a3b8
+    style payment fill:#f0f7ff,stroke:#6d92df
+    style fulfillment fill:#ffffff,stroke:#9bb0ca,stroke-dasharray:4 4
+    H --> n1
+    linkStyle 4 stroke:#315fd6,stroke-width:3px

@@ -34,6 +34,8 @@ export interface PopoverPanelSection {
 
 export interface PopoverPanel {
   title: string
+  /** 分组目标使用带完整名称的纵向列表，避免只显示相同的箭头图标。 */
+  layout?: 'destinations'
   items?: PopoverPanelItem[]
   sections?: PopoverPanelSection[]
 }
@@ -115,6 +117,7 @@ export class Popover {
     }
     const p = document.createElement('div')
     p.className = 'mw-popover-panel'
+    if (panel.layout === 'destinations') p.classList.add('mw-popover-destinations')
     const title = document.createElement('div')
     title.className = 'mw-popover-panel-title'
     title.textContent = panel.title
@@ -130,14 +133,20 @@ export class Popover {
       }
       const grid = document.createElement('div')
       grid.className = 'mw-popover-grid'
-      grid.style.gridTemplateColumns = `repeat(${section.columns ?? 3}, 1fr)`
+      grid.style.gridTemplateColumns = `repeat(${panel.layout === 'destinations' ? 1 : section.columns ?? 3}, 1fr)`
       for (const item of section.items) {
         const b = document.createElement('button')
         b.type = 'button'
         b.className = 'mw-popover-cell' + (item.selected ? ' selected' : '') + (item.swatch ? ' swatch' : '')
         b.title = item.title
         b.setAttribute('aria-label', item.title)
-        if (item.swatch) {
+        if (panel.layout === 'destinations') {
+          b.classList.add('destination')
+          const icon = document.createElement('span'); icon.textContent = item.glyph ?? ''
+          icon.setAttribute('aria-hidden', 'true')
+          const label = document.createElement('span'); label.textContent = item.title
+          b.append(icon, label)
+        } else if (item.swatch) {
           const dot = document.createElement('span')
           dot.className = 'mw-swatch-dot'
           if (item.swatch === 'none') dot.classList.add('none')
@@ -158,9 +167,19 @@ export class Popover {
 
     this.el!.appendChild(p)
     this.panelEl = p
-    // flip below the toolbar if the panel would clip past the top of the host
+    // 面板上方空间不足时翻到工具条下方。
     const hostTop = this.host.getBoundingClientRect().top
     if (p.getBoundingClientRect().top < hostTop + 2) p.classList.add('below')
+    if (panel.layout === 'destinations') {
+      const bounds = this.host.parentElement!.getBoundingClientRect(), toolbar = this.el!.getBoundingClientRect()
+      const above = toolbar.top - bounds.top - 12, below = bounds.bottom - toolbar.bottom - 12
+      p.classList.toggle('below', below > above)
+      p.style.width = `${Math.min(260, Math.max(140, bounds.width - 24))}px`
+      p.style.maxHeight = `${Math.max(60, Math.min(280, Math.max(above, below)))}px`
+      const box = p.getBoundingClientRect()
+      const offset = box.left < bounds.left + 6 ? bounds.left + 6 - box.left : box.right > bounds.right - 6 ? bounds.right - 6 - box.right : 0
+      p.style.transform = `translateX(calc(-50% + ${offset}px))`
+    }
   }
 
   hide() {
@@ -200,6 +219,9 @@ export const POPOVER_CSS = `
   padding: 6px; min-width: 140px;
 }
 .mw-popover-panel.below { bottom: auto; top: calc(100% + 6px); }
+.mw-popover-destinations { box-sizing:border-box; overflow:auto; }
+.mw-popover-cell.destination { display:flex; gap:8px; align-items:center; min-height:32px; text-align:left; white-space:normal; overflow-wrap:anywhere; }
+.mw-popover-cell.destination:focus-visible { outline:2px solid var(--mw-accent,#315fd6); outline-offset:-2px; }
 .mw-popover-panel-title {
   font-size: 10px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.07em;
   color: var(--mw-chrome-dim, #666); padding: 3px 5px 7px; white-space: nowrap;

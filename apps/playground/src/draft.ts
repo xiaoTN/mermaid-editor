@@ -79,16 +79,28 @@ export class DraftStore {
       source: draft.source, untitled: draft.untitled }, draft.baseHash, draft) : null
   }
 
-  write(file: EditorFile & { path: string }, baseHash: string, code: string): void {
+  write(file: EditorFile & { path: string }, baseHash: string, code: string): boolean {
     try {
+      if (!this.storage) return false
+      const key = draftKey(file.path, baseHash)
+      // Do not overwrite an existing draft when storage cannot even be read.
+      this.storage.getItem(key)
       const previous = this.entries()
-      const draft: Draft = { ...file, code, baseCode: file.code, baseHash,
-        updatedAt: Math.max(Date.now(), (previous[0]?.updatedAt ?? 0) + 1) }
-      this.storage?.setItem(draftKey(file.path, baseHash), JSON.stringify(draft))
+      const contents = { ...file, code, baseCode: file.code, baseHash }
+      const existing = previous.find(draft => draft.path === file.path && draft.baseHash === baseHash)
+      if (existing && existing.code === code && existing.baseCode === file.code &&
+        existing.name === file.name && existing.source === file.source &&
+        !!existing.untitled === !!file.untitled) return true
+      const draft: Draft = { ...contents, updatedAt: Math.max(Date.now(), (previous[0]?.updatedAt ?? 0) + 1) }
+      const serialized = JSON.stringify(draft)
+      this.storage.setItem(key, serialized)
+      // A successful call alone is not enough for storage implementations that silently drop writes.
+      if (this.storage.getItem(key) !== serialized) return false
       for (const old of previous) {
         if (old.path === file.path && old.baseHash !== baseHash) this.remove(old.path, old.baseHash)
       }
-    } catch { /* A failed write must leave the previous draft intact. */ }
+      return true
+    } catch { return false /* A failed write must leave the previous draft intact. */ }
   }
 
   remove(path: string, hash: string): void {
@@ -131,6 +143,11 @@ export class DraftSession {
     }
   }
 
+  /** Confirm the current dirty snapshot is readable from persistent storage. */
+  ensurePersisted(): boolean {
+    return !this.dirty || this.store.write(this.file, this.baseHash, this.current)
+  }
+
   restore(): string {
     const code = this.candidate?.code
     if (code !== undefined) this.edit(code)
@@ -151,8 +168,8 @@ export class DraftSession {
     this.file = { ...file, path: this.path, diskHash: this.file.diskHash }
     this.baseHash = hash
     this.candidate = undefined
-    this.store.removeFile(this.path)
     if (this.current !== file.code) this.store.write(this.file, hash, this.current)
+    else this.store.removeFile(this.path)
   }
 
   /** Call only after the file adapter reports success, with the exact saved snapshot. */

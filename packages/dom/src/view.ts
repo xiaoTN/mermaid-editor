@@ -2,9 +2,11 @@ import { mountNotices, NOTICE_CSS } from './notices'
 import { mountBoxSelection, BOX_SELECTION_CSS } from './boxSelection'
 import { t, onLocaleChange } from './i18n'
 import { FlowchartGestures, flowchartEndpoint, GESTURE_CSS } from './gestures'
+import { NodeMovePreview, NODE_MOVE_PREVIEW_CSS } from './nodeMovePreview'
 import {
   MermaidWysiwygEditor,
   mermaidSource,
+  flowchartSubgraphContains,
   MESSAGE_OPS,
   PARTICIPANT_TYPES,
   type Diagnostic,
@@ -40,7 +42,7 @@ export const COLOR_PALETTE = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#06b6
 
 export interface MermaidLike {
   initialize(config: Record<string, unknown>): void
-  render(id: string, code: string): Promise<{ svg: string; bindFunctions?: (el: Element) => void }>
+  render(id: string, code: string, container?: Element): Promise<{ svg: string; bindFunctions?: (el: Element) => void }>
   parse(code: string, options?: Record<string, unknown>): Promise<unknown>
 }
 
@@ -82,11 +84,13 @@ type ViewEventMap = {
   connectPreview: { source: string | null }
 }
 
+// 主 SVG 不按原始图形尺寸裁切，节点和组可拖入空白处，改由外层画布负责裁切。
 const BASE_CSS = `
 .mw-canvas { position: relative; overflow: auto; outline: none; }
 .mw-canvas .mw-svg-host { user-select: none; -webkit-user-select: none; }
 .mw-canvas .mw-svg-host { min-height: 100%; display: flex; align-items: flex-start; justify-content: center; padding: 16px; box-sizing: border-box; }
 .mw-canvas svg { max-width: 100%; height: auto; }
+.mw-canvas .mw-svg-host > svg { overflow: visible; }
 .mw-canvas.mw-panzoom { overflow: hidden; }
 .mw-canvas.mw-panzoom .mw-svg-host { position: absolute; inset: 0; display: block; padding: 0; min-height: 0; overflow: auto; }
 .mw-canvas.mw-panzoom .mw-svg-host svg { position: absolute; left: 0; top: 0; max-width: none; height: auto; transform-origin: 0 0; }
@@ -128,7 +132,6 @@ const BASE_CSS = `
 }
 `
 
-let styleInjected = false
 /** global counter so concurrent views never collide on mermaid's DOM ids */
 let renderIdCounter = 0
 
@@ -230,6 +233,7 @@ export class MermaidCanvasView {
   private listeners = new Map<keyof ViewEventMap, Set<(p: never) => void>>()
   private notices: ReturnType<typeof mountNotices>
   private gestures: FlowchartGestures
+  private nodePreview: NodeMovePreview
   private connectSource: string | null = null
   private suppressNextClick = false
   private ghostPath: SVGLineElement | null = null
@@ -281,13 +285,16 @@ export class MermaidCanvasView {
     this.hooks = options.hooks ?? {}
     this.mermaidConfig = { startOnLoad: false, ...options.mermaidConfig }
 
-    if (!styleInjected) {
-      const style = document.createElement('style')
+    // 多次挂载和开发热更新共用一份样式，避免旧预览窗口的规则残留。
+    const styles = BASE_CSS + POPOVER_CSS + GESTURE_CSS + NOTICE_CSS + BOX_SELECTION_CSS + NODE_MOVE_PREVIEW_CSS
+    let style = document.head.querySelector<HTMLStyleElement>('style[data-mw]')
+    if (!style) {
+      style = document.createElement('style')
       style.setAttribute('data-mw', '')
-      style.textContent = BASE_CSS + POPOVER_CSS + GESTURE_CSS + NOTICE_CSS + BOX_SELECTION_CSS
       document.head.appendChild(style)
-      styleInjected = true
     }
+    if (style.textContent !== styles) style.textContent = styles
+    for (const duplicate of document.head.querySelectorAll('style[data-mw]')) if (duplicate !== style) duplicate.remove()
 
     this.container.classList.add('mw-canvas')
     this.container.tabIndex = 0
@@ -303,9 +310,11 @@ export class MermaidCanvasView {
     this.container.append(this.svgHost, this.overlayHost, this.errorBadge)
     this.popover = new Popover(this.overlayHost)
     this.notices = mountNotices(this.container, this.editor, () => this.readOnly, options.hintContainer)
+    this.nodePreview = new NodeMovePreview(this.editor, this.container, this.mermaid, () => this.svg,
+      () => this.readOnly, notices => this.notices.show(notices), (code, svg) => this.applyPreview(code, svg))
     this.gestures = new FlowchartGestures(this.editor, this.container, () => this.readOnly || this.tool === 'box-select', () => this.updatePopover(), notices => this.notices.show(notices),
       () => this.tool === 'select' && !this.inlineInput && !this.inPlaceSession, () => this.popover.hide(),
-      entityId => { this.pendingEditEntity = entityId })
+      entityId => { this.pendingEditEntity = entityId }, this.nodePreview)
 
     this.mermaid.initialize(this.mermaidConfig)
 
@@ -333,15 +342,29 @@ export class MermaidCanvasView {
     this.container.addEventListener('keydown', keydown)
     this.disposers.push(() => this.container.removeEventListener('keydown', keydown))
 
-    // 点击画布外关闭浮层；依赖选区的工具栏控件仍可使用当前选择。
+    // 点击实体和编辑控件以外的地方关闭浮层，包含 SVG 外仍属于画布的空白区域。
     const docPointerDown = (e: PointerEvent) => {
       const target = e.target as Node | null
-      if (!target || this.container.contains(target)) return
+      if (!target) return
+      const inside = this.container.contains(target)
+      const element = target instanceof Element ? target : target.parentElement
+      if (inside && element) {
+        if (this.nodePreview.active && element.closest('.mw-zoom-controls')) return
+        if (element.closest('.mw-popover, .mw-popover-panel, .mw-ports, .mw-endpoints, .mw-drag-preview, input, textarea, select, [contenteditable="true"]')) return
+        if (this.svg?.contains(element) && element.closest('[data-mw-entity], [data-mw-ambiguous]')) return
+      }
+      // A background press may become a pan. Leave selection intact until its
+      // click is known not to be the suppressed release of a drag.
+      const mayPan = this.canStartPan(e)
       this.inPlaceSession?.finish?.(true)
       // 覆盖层编辑器会通过自己的失焦事件提交。
       this.clearLifelineUi()
+      this.gestures.dismiss()
       this.popover.hide()
-      if (this.editor.selection.length && !options.selectionControls?.some(control => control.contains(target))) {
+      // 追加框选先保留原选区，分组等外部工具也需要沿用当前选择。
+      const appendSelection = inside && this.svgHost.contains(target) &&
+        (e.shiftKey || e.metaKey || e.ctrlKey || this.tool === 'box-select')
+      if (this.editor.selection.length && !mayPan && !appendSelection && !options.selectionControls?.some(control => control.contains(target))) {
         this.editor.clearSelection('canvas')
       }
     }
@@ -393,6 +416,7 @@ export class MermaidCanvasView {
   }
 
   setTool(tool: Tool) {
+    this.gestures.cancel()
     this.boxSelection?.cancel()
     this.tool = tool
     this.container.classList.toggle('mw-tool-connect', tool === 'connect')
@@ -403,6 +427,7 @@ export class MermaidCanvasView {
   }
 
   setReadOnly(readOnly: boolean) {
+    this.gestures.cancel()
     this.boxSelection?.cancel()
     this.requestedReadOnly = readOnly
     this.notices.update()
@@ -446,6 +471,22 @@ export class MermaidCanvasView {
 
   // ----- 画布平移与缩放 -----
 
+  /** Share the eligibility check with the document-level selection dismissal. */
+  private canStartPan(e: PointerEvent): boolean {
+    if (!this.panZoomEnabled || this.editor.result.typeInfo?.id !== 'flowchart') return false
+    if (e.button !== 0 || this.tool !== 'select' || e.altKey || e.shiftKey) return false
+    if (this.inlineInput || this.inPlaceSession) return false
+    const target = e.target as Element | null
+    if (!target || !this.svgHost.contains(target)) return false
+    // Entity presses belong to select/drag gestures.
+    let el: Element | null = target
+    while (el && el !== this.container) {
+      if (el.getAttribute?.('data-mw-entity')) return false
+      el = el.parentElement
+    }
+    return true
+  }
+
   private setupPanZoom() {
     this.container.classList.add('mw-panzoom')
     const onScroll = () => this.updatePopover()
@@ -475,18 +516,7 @@ export class MermaidCanvasView {
 
     const onDown = (e: PointerEvent) => {
       this.suppressNextClick = false
-      if (this.editor.result.typeInfo?.id !== 'flowchart') return
-      if (e.button !== 0) return
-      if (this.tool !== 'select' || e.altKey || e.shiftKey) return
-      if (this.inlineInput || this.inPlaceSession) return
-      const target = e.target as Element | null
-      if (!target || !this.svgHost.contains(target)) return
-      // background only — entity presses belong to select/drag gestures
-      let el: Element | null = target
-      while (el && el !== this.container) {
-        if (el.getAttribute?.('data-mw-entity')) return
-        el = el.parentElement
-      }
+      if (!this.canStartPan(e)) return
       this.panSession = { pointerId: e.pointerId, x: e.clientX, y: e.clientY, tx: this.zoomTx, ty: this.zoomTy, moved: false }
     }
     const onMove = (e: PointerEvent) => {
@@ -627,6 +657,7 @@ export class MermaidCanvasView {
     if (!this.svg) return
     this.applyingOwnTransform = true
     this.svg.style.transform = `translate(${this.zoomTx}px, ${this.zoomTy}px) scale(${this.zoomScale})`
+    this.nodePreview.updateViewport()
     // mutation records for this write are delivered in a microtask queued at
     // mutation time — before this one — so the observer still sees the flag
     queueMicrotask(() => {
@@ -702,18 +733,7 @@ export class MermaidCanvasView {
           midFlightSession.liveTimer = null
         }
       }
-      this.lastRenderedCode = code
-      this.lastError = null
-      this.errorBadge.style.display = 'none'
-      this.svgHost.innerHTML = svg
-      this.svg = this.svgHost.querySelector('svg')
-      if (this.svg) {
-        if (this.panZoomEnabled) this.prepareSvgForPanZoom()
-        else this.svg.style.maxWidth = '100%'
-        this.bindSvg()
-      }
-      this.editor.setDiagnostics([])
-      this.emit('render', { ok: true })
+      this.displaySvg(code, svg)
       if (this.activeInPlaceSession()) {
         this.resumeInPlaceSession(liveEdit)
       } else if (this.pendingEditEntity) {
@@ -737,6 +757,31 @@ export class MermaidCanvasView {
       this.editor.setDiagnostics([diag])
       this.emit('render', { ok: false, error: message })
     }
+  }
+
+  /** 松手时直接使用预览已经算好的结果，同时作废还在排队或计算的旧图。 */
+  private applyPreview(code: string, svg: string) {
+    this.editor.setCode(code, 'canvas')
+    if (this.renderTimer) clearTimeout(this.renderTimer)
+    this.renderTimer = null
+    ++this.renderSeq
+    this.displaySvg(code, svg)
+  }
+
+  /** 普通渲染与预览提交共用同一套绑定，保证选择、连线和编辑能力一致。 */
+  private displaySvg(code: string, svg: string) {
+    this.lastRenderedCode = code
+    this.lastError = null
+    this.errorBadge.style.display = 'none'
+    this.svgHost.innerHTML = svg
+    this.svg = this.svgHost.querySelector('svg')
+    if (this.svg) {
+      if (this.panZoomEnabled) this.prepareSvgForPanZoom()
+      else this.svg.style.maxWidth = '100%'
+      this.bindSvg()
+    }
+    this.editor.setDiagnostics([])
+    this.emit('render', { ok: true })
   }
 
   private bindSvg() {
@@ -832,11 +877,15 @@ export class MermaidCanvasView {
   }
 
   private onSvgClick(e: MouseEvent) {
-    if (this.readOnly) return
     // pointer capture during a connect gesture retargets the click to the svg
     // root; the pointerup handler has already decided what the gesture meant
     if (this.suppressNextClick) {
       this.suppressNextClick = false
+      return
+    }
+    // Read-only views can still have a programmatic selection and pan it.
+    if (this.readOnly) {
+      if (!(e.target as Element).closest?.('[data-mw-entity], [data-mw-ambiguous]')) this.editor.clearSelection('canvas')
       return
     }
     // while an in-place editor is open, clicks must not re-select or steal
@@ -1509,6 +1558,12 @@ export class MermaidCanvasView {
 
   private onKeyDown(e: KeyboardEvent) {
     if (this.readOnly) return
+    // 预览按钮使用原生键盘行为，不能把 Enter 或 Delete 当成画布上的改字、删除操作。
+    if ((e.target as Element)?.closest('.mw-drag-preview')) {
+      if (e.key === 'Escape') { e.preventDefault(); this.nodePreview.cancel(); this.container.focus({ preventScroll: true }) }
+      return
+    }
+    if (e.key !== 'Escape' && (e.target as Element)?.closest('button')) return
     if (this.inlineInput || this.inPlaceSession || e.isComposing ||
       (e.target as Element)?.closest('input, textarea, select, [contenteditable="true"]')) return
     const mod = e.metaKey || e.ctrlKey
@@ -1579,7 +1634,7 @@ export class MermaidCanvasView {
   private updatePopover() {
     this.gestures.update()
     this.popover.hide()
-    if (this.readOnly || this.inlineInput || this.inPlaceSession) return
+    if (this.readOnly || this.inlineInput || this.inPlaceSession || this.nodePreview.active) return
     const sel = this.editor.selection
     if (!sel.length || !this.svg) return
     if (sel.length > 1) {
@@ -1701,13 +1756,30 @@ export class MermaidCanvasView {
           onClick: () => this.editor.dispatch({ type: 'duplicateNode', id: node.id }),
         },
         rename,
+        ...([-1, 1] as const).filter(step => this.nodePreview.canNudge(node.id, step)).map(step => ({
+          glyph: step < 0 ? '←' : '→', title: t(step < 0 ? 'ui.orderEarlier' : 'ui.orderLater'),
+          onClick: () => this.nodePreview.nudge(node.id, step),
+        })),
         del,
       ]
     }
 
     if (flowchart && id.startsWith('subgraph:')) {
+      const group = flowchart.subgraphs.find(group => group.entityId === id)
+      if (!group) return []
+      const destinations = [
+        ...(group.parent ? [{ glyph: '↗', title: t('group.moveRoot'), onClick: () => this.nodePreview.relocate(group.id, null) }] : []),
+        ...flowchart.subgraphs.filter(target => target.id !== group.parent && !flowchartSubgraphContains(flowchart, group.id, target.id))
+          .map(target => ({ glyph: '↪', title: t('group.moveInto', { name: target.title ?? target.id }),
+            onClick: () => this.nodePreview.relocate(group.id, target.id) })),
+      ]
       return [
         { icon: ICONS.pencil, title: t('ui.renameSubgraph'), onClick: () => this.editEntityLabel(id) },
+        ...([-1, 1] as const).filter(step => this.nodePreview.canNudge(group.id, step)).map(step => ({
+          glyph: step < 0 ? '←' : '→', title: t(step < 0 ? 'group.orderEarlier' : 'group.orderLater'),
+          onClick: () => this.nodePreview.nudge(group.id, step),
+        })),
+        ...(destinations.length ? [{ glyph: '↪', title: t('group.move'), panel: { title: t('group.move'), layout: 'destinations' as const, items: destinations } }] : []),
         { glyph: t('group.ungroup'), title: t('group.ungroup'), danger: true, onClick: () => this.editor.deleteEntities([id]) },
       ]
     }
@@ -2291,6 +2363,7 @@ export class MermaidCanvasView {
       this.popoverFollowRaf = 0
     }
     this.gestures.destroy()
+    this.nodePreview.destroy()
     this.notices.destroy()
     if (this.renderTimer) clearTimeout(this.renderTimer)
     if (this.lifelineClearTimer) clearTimeout(this.lifelineClearTimer)

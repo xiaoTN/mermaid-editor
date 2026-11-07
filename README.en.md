@@ -69,7 +69,7 @@ flowchart TD
 | Node shape | Select a node and open the shape panel: rectangle, rounded, stadium, diamond, hexagon, circle, cylinder, or subroutine |
 | Node colors | Select a node and open the color panel to adjust fill, border, and text color, or reset to default |
 | Node position | Drag a node to move it aside and untangle edges; Mermaid lays the diagram out automatically, so free dragging is not written to the source. Dragging a node into or out of a group does rewrite it |
-| Add an edge | Drag from a blue dot on the node edge to another node; releasing on empty canvas opens a “New node” menu that creates the node and the edge |
+| Add an edge | Drag from a blue dot on the node edge to another node; releasing on empty canvas creates a node and connects it |
 | Rewire an edge | Select an edge and drag either endpoint dot to a different node |
 | Edge style | Select an edge to switch between solid, dotted, and thick, edit its label, or delete it |
 | Add or remove nodes | Use “+ Node” in the toolbar; press `Delete` / `Backspace` to remove a selection; the node menu can duplicate it |

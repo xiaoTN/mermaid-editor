@@ -14,6 +14,7 @@ import { JSDOM } from '../../packages/dom/node_modules/jsdom/lib/api.js'
 import { createDomCases } from './dom-cases.mts'
 import { createApplicationCases } from './application-cases.mts'
 import { createStep6eCases } from './step6e-cases.mts'
+import { hasHardcodedChinese } from './ui-source-scan.mts'
 
 // 仅写入仓库根目录的 out/cases；testdata 中的样例、规则和校验器始终只读。
 const root = fileURLToPath(new URL('../../', import.meta.url))
@@ -554,7 +555,7 @@ const languageChecks: [string, string, () => void | Promise<void>][] = [
     check(Object.values(messages).every(bundle => Object.values(bundle).every(text => text.trim())), '语言包有空值')
     for (const dir of ['packages/dom/src', 'apps/playground/src']) {
       for (const file of readdirSync(join(root, dir), { recursive: true }).map(String).filter(file => /\.(ts|tsx)$/.test(file) && !file.startsWith('i18n') && file !== 'defaultExample.ts')) {
-        check(!/[\u3400-\u9fff]/u.test(readFileSync(join(root, dir, file), 'utf8')), `界面源码含硬编码中文：${dir}/${file}`)
+        check(!hasHardcodedChinese(readFileSync(join(root, dir, file), 'utf8'), file), `界面源码含硬编码中文：${dir}/${file}`)
       }
     }
   }],

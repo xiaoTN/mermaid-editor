@@ -5,6 +5,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createHash } from 'node:crypto'
 import App from '../../../apps/playground/src/App'
+import { DEFAULT_EXAMPLE } from '../../../apps/playground/src/defaultExample'
 import { DraftStore } from '../../../apps/playground/src/draft'
 import { DraftNotice } from '../../../apps/playground/src/DraftNotice'
 import { browserFiles, type FileAccess } from '../../../apps/playground/src/files'
@@ -49,7 +50,7 @@ describe('应用线框和文件交互', () => {
     await mount()
     const labels = [...host.querySelectorAll('.toolbar button')].map(b => b.getAttribute('aria-label'))
     expect(labels).toEqual(['撤销', '重做', '框选', '+ 节点', '+ 分组', '切换图表方向'])
-    expect([...host.querySelectorAll('.file-actions button')].map(b => b.getAttribute('aria-label'))).toEqual(['新建', '打开', '保存'])
+    expect([...host.querySelectorAll('.file-actions button')].map(b => b.getAttribute('aria-label'))).toEqual(['新建', '示例', '打开', '保存'])
     expect(host.querySelector('.codepanel [aria-label="复制代码"]')).not.toBeNull()
     expect(host.querySelector('.canvas-footer .sync-status')).not.toBeNull()
     expect(host.querySelector('.brand-name')?.textContent).toBe('Mermaid编辑器')
@@ -95,7 +96,9 @@ describe('应用线框和文件交互', () => {
       view = this
       await render.call(this)
     })
-    await mount()
+    const fixture = 'flowchart TD\n A([用户下单]) --> B{库存充足?}\n B -->|是| C[扣减库存]\n B -.->|否| D[通知补货]\n subgraph 支付\n C ==> E[发起支付]\n end\n'
+    await mount({ open: async () => ({ name: '分组.mmd', code: fixture }), save: vi.fn() })
+    await open()
     const original = view.editor.code
     const node = (id: string) => host.querySelector(`[data-mw-entity="node:${id}"]`)!
     await act(async () => {
@@ -121,6 +124,39 @@ describe('应用线框和文件交互', () => {
       host.querySelector('.titlebar')!.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
     })
     expect(view.editor.selection).toEqual([])
+  })
+  it('没有草稿时默认载入完整功能示例', async () => {
+    let view!: MermaidCanvasView
+    const render = MermaidCanvasView.prototype.render
+    vi.spyOn(MermaidCanvasView.prototype, 'render').mockImplementation(async function () { view = this; await render.call(this) })
+    await mount()
+    expect(view.editor.code).toBe(DEFAULT_EXAMPLE)
+    expect(view.editor.result.typeInfo?.id).toBe('flowchart')
+    expect(view.editor.canUndo).toBe(false)
+    expect(new DraftStore().resume()).toBeNull()
+  })
+  it.each(['zh-CN', 'en'] as const)('%s 从已有文件载入示例，保留草稿且能撤销重做，保存不覆盖原文件', async locale => {
+    setLocale(locale)
+    const opened = { name: '原文件.md', path: 'project/原文件.md', code: 'flowchart LR\n  甲 --> 乙\n',
+      source: '# 原文\n```mermaid\nflowchart LR\n  甲 --> 乙\n```', diskHash: 'original-hash' }
+    const fileAccess: FileAccess = { open: async () => opened, save: vi.fn(async () => {}) }
+    let view!: MermaidCanvasView
+    const render = MermaidCanvasView.prototype.render
+    vi.spyOn(MermaidCanvasView.prototype, 'render').mockImplementation(async function () { view = this; await render.call(this) })
+    await mount(fileAccess); await open()
+    await act(async () => { view.editor.dispatch({ type: 'renameNode', id: '甲', label: '原来的未保存修改' }) })
+    const previous = view.editor.code
+    await click('tb.example')
+    expect(view.editor.code).toBe(DEFAULT_EXAMPLE)
+    expect(host.querySelector('.app-toast')?.textContent).toBe(t('toast.exampleLoaded'))
+    const exampleDraft = new DraftStore().resume()!
+    expect(exampleDraft.path).not.toBe(opened.path)
+    expect(exampleDraft.code).toBe(DEFAULT_EXAMPLE)
+    expect((await new DraftStore().open(opened)).restore()).toBe(previous)
+    await click('tb.undo'); expect(view.editor.code).toBe(previous)
+    await click('tb.redo'); expect(view.editor.code).toBe(DEFAULT_EXAMPLE)
+    await click('tb.save')
+    expect(fileAccess.save).toHaveBeenLastCalledWith({ code: DEFAULT_EXAMPLE, name: t('app.untitled'), untitled: true })
   })
   it.each(['zh-CN', 'en'] as const)('%s 一键新建清空所有内容，可撤销、重做并继续添加节点', async locale => {
     setLocale(locale)
@@ -154,6 +190,119 @@ describe('应用线框和文件交互', () => {
     await click('draft.restore')
     expect(view.editor.code).toBe(newCode)
     expect(host.querySelector('.titlebar')?.textContent).toContain(t('app.untitled'))
+  })
+  it.each(['zh-CN', 'en'] as const)('%s 草稿写入失败时阻止切换并保留文件身份', async locale => {
+    setLocale(locale)
+    const file = { name: 'original.mmd', path: '/original.mmd', code: 'flowchart LR\n A --> B' }
+    const fileAccess: FileAccess = { open: async () => file, save: vi.fn(async () => {}) }
+    let view!: MermaidCanvasView
+    const render = MermaidCanvasView.prototype.render
+    vi.spyOn(MermaidCanvasView.prototype, 'render').mockImplementation(async function () { view = this; await render.call(this) })
+    await mount(fileAccess); await open()
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('quota') })
+    await click('tb.addGroup')
+    const original = view.editor.code
+    await click('tb.example')
+    expect(view.editor.code).toBe(original)
+    expect(host.querySelector('[data-user-content="filename"]')?.textContent).toBe(file.name)
+    expect(host.querySelector('.app-toast')?.textContent).toBe(t('err.draftNotSaved'))
+    await click('tb.save')
+    expect(fileAccess.save).toHaveBeenCalledWith({ ...file, code: original })
+  })
+  it.each(['unavailable', 'silent', 'read-error'] as const)('无题文档在存储 %s 时阻止新建', async failure => {
+    if (failure === 'unavailable') vi.spyOn(window, 'localStorage', 'get').mockImplementation(() => { throw new Error('disabled') })
+    const fileAccess: FileAccess = { open: vi.fn(), save: vi.fn(async () => {}) }
+    let view!: MermaidCanvasView
+    const render = MermaidCanvasView.prototype.render
+    vi.spyOn(MermaidCanvasView.prototype, 'render').mockImplementation(async function () { view = this; await render.call(this) })
+    await mount(fileAccess)
+    // 没有未保存内容时，不依赖存储也可以切换。
+    await click('tb.new')
+    if (failure === 'silent') vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {})
+    if (failure === 'read-error') vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new Error('read denied') })
+    await click('tb.addGroup')
+    const before = view.editor.code
+    await click('tb.example')
+    expect(view.editor.code).toBe(before)
+    expect(host.querySelector('[data-user-content="filename"]')?.textContent).toBe(t('app.untitled'))
+    expect(host.querySelector('.app-toast')?.textContent).toBe(t('err.draftNotSaved'))
+    await click('tb.save')
+    expect(fileAccess.save).toHaveBeenLastCalledWith({ code: before, name: t('app.untitled'), untitled: true })
+  })
+  it('草稿已经持久化时写入失败仍允许切换；失败后恢复存储也可重试', async () => {
+    let view!: MermaidCanvasView
+    const render = MermaidCanvasView.prototype.render
+    vi.spyOn(MermaidCanvasView.prototype, 'render').mockImplementation(async function () { view = this; await render.call(this) })
+    await mount(); await click('tb.addGroup')
+    const first = view.editor.code
+    const stored = new DraftStore().resume()!
+    const denied = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('quota') })
+    await click('tb.example')
+    expect(view.editor.code).toBe(DEFAULT_EXAMPLE)
+    expect((await new DraftStore().open({ ...stored.snapshot, code: stored.baseCode })).restore()).toBe(first)
+    await click('tb.addGroup')
+    const latest = view.editor.code
+    await click('tb.new')
+    expect(view.editor.code).toBe(latest)
+    denied.mockRestore()
+    await click('tb.new')
+    expect(view.editor.code).toBe('flowchart TD\n')
+  })
+  it('新建等待散列时发生编辑，切换前检查最新内容', async () => {
+    let view!: MermaidCanvasView
+    const render = MermaidCanvasView.prototype.render
+    vi.spyOn(MermaidCanvasView.prototype, 'render').mockImplementation(async function () { view = this; await render.call(this) })
+    await mount()
+    let finish!: () => Promise<void>
+    const digest = crypto.subtle.digest
+    vi.spyOn(crypto.subtle, 'digest').mockImplementationOnce((algorithm, data) => new Promise(resolve => {
+      finish = async () => resolve(await digest(algorithm, data))
+    }))
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('quota') })
+    await click('tb.new')
+    await click('tb.addGroup')
+    const before = view.editor.code
+    await act(async () => { await finish() })
+    expect(view.editor.code).toBe(before)
+    expect(host.querySelector('[data-user-content="filename"]')?.textContent).toBe(t('app.filename'))
+    expect(host.querySelector('.app-toast')?.textContent).toBe(t('err.draftNotSaved'))
+  })
+  it('初始化散列未完成时编辑并新建，仍检查旧文档草稿', async () => {
+    let finish!: () => Promise<void>
+    const digest = crypto.subtle.digest
+    vi.spyOn(crypto.subtle, 'digest').mockImplementationOnce((algorithm, data) => new Promise(resolve => {
+      finish = async () => resolve(await digest(algorithm, data))
+    }))
+    let view!: MermaidCanvasView
+    const render = MermaidCanvasView.prototype.render
+    vi.spyOn(MermaidCanvasView.prototype, 'render').mockImplementation(async function () { view = this; await render.call(this) })
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('quota') })
+    await mount(); await click('tb.addGroup')
+    const before = view.editor.code
+    await click('tb.new')
+    await act(async () => { await finish() })
+    expect(view.editor.code).toBe(before)
+    expect(host.querySelector('.app-toast')?.textContent).toBe(t('err.draftNotSaved'))
+    expect(host.querySelector('[data-user-content="filename"]')?.textContent).toBe(t('app.filename'))
+  })
+  it('未恢复的历史草稿不会因切换干净文档被覆盖', async () => {
+    const file = { name: 'pending.mmd', code: 'flowchart TD\n A' }
+    const drafts = new DraftStore()
+    const old = await drafts.open(file); old.edit('flowchart TD\n Old')
+    await mount()
+    expect(host.querySelector('.draft-notice')).not.toBeNull()
+    await click('tb.new')
+    expect((await drafts.open(file)).restore()).toBe('flowchart TD\n Old')
+  })
+  it('写入被静默丢弃时不删除同一文件的旧版本草稿', async () => {
+    const drafts = new DraftStore()
+    const file = { name: 'versions.mmd', code: 'flowchart TD\n A' }
+    const old = await drafts.open(file); old.edit('flowchart TD\n Old')
+    const newer = await drafts.open({ ...file, code: 'flowchart TD\n B' }, false)
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {})
+    newer.edit('flowchart TD\n New')
+    expect(newer.ensurePersisted()).toBe(false)
+    expect((await drafts.open(file)).restore()).toBe('flowchart TD\n Old')
   })
   it('从 Markdown 新建时移除原文件路径和包装内容，保存与撤销都不会覆盖原文件', async () => {
     const opened = { name: '项目.md', path: 'project/项目.md', code: 'flowchart LR\n A --> B',

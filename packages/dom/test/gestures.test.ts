@@ -111,21 +111,55 @@ describe.each(['zh-CN', 'en'] as const)('%s 画布手势', locale => {
     expect(host.querySelectorAll('.mw-endpoints button')).toHaveLength(2)
     for (const dot of host.querySelectorAll('.mw-endpoints button')) expect(dot.getAttribute('aria-label')).toBe(t('aria.edgeEndDot'))
   })
-  it('空白连线菜单可取消且不改代码，切换语言立即刷新', () => {
-    pointer(find('node:A'), 'pointerover'); pointer(host.querySelector('.mw-ports button')!, 'pointerdown'); drop(null)
-    setLocale(locale === 'en' ? 'zh-CN' : 'en')
-    const cancel = host.querySelector<HTMLButtonElement>('.mw-new-node-menu button:last-child')!
-    expect(cancel.textContent).toBe(t('menu.cancel'))
-    pointer(cancel, 'click')
+  it.each(['outside', 'control', 'Escape', 'pointercancel', 'readonly', 'click'])('%s 不会因为取消或误点而创建节点', reason => {
+    pointer(find('node:A'), 'pointerover'); pointer(host.querySelector('.mw-ports button')!, 'pointerdown')
+    if (reason === 'Escape') document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    if (reason === 'pointercancel') pointer(document, 'pointercancel', 90)
+    if (reason === 'readonly') view.setReadOnly(true)
+    const control = document.createElement('button'); host.append(control)
+    const hit = reason === 'outside' ? document.body : reason === 'control' ? control : host.querySelector('svg')
+    if (reason === 'click') {
+      Object.defineProperty(document, 'elementFromPoint', { configurable: true, value: () => hit })
+      pointer(document, 'pointerup')
+    } else drop(hit)
     expect(host.querySelector('.mw-new-node-menu')).toBeNull()
     expect(editor.code).toBe(CODE); expect(editor.canUndo).toBe(false)
   })
-  it('空白处菜单新建节点并连线，一次撤销回到原始字节', () => {
-    pointer(find('node:A'), 'pointerover'); pointer(host.querySelector('.mw-ports button')!, 'pointerdown'); drop(null)
-    expect(editor.code).toBe(CODE)
-    pointer(handle('新建节点'), 'click')
+  it.each(['edge', 'edge-hit', 'edge-label', 'html-label', 'unknown-shape', 'nested-svg', 'ambiguous'])('拉线落在 %s 图形上不创建节点，代码和历史不变', kind => {
+    const svg = host.querySelector('svg')!
+    const ns = 'http://www.w3.org/2000/svg'
+    let target: Element
+    if (kind === 'edge') target = find('edge:A->B#0')
+    else if (kind === 'edge-hit') target = host.querySelector('.mw-edge-hit')!
+    else if (kind === 'edge-label' || kind === 'html-label') {
+      const label = document.createElementNS(ns, 'g')
+      label.setAttribute('class', 'edgeLabel'); label.setAttribute('data-mw-entity', 'edge:A->B#0')
+      label.innerHTML = '<foreignObject><div xmlns="http://www.w3.org/1999/xhtml"><span>标签</span></div></foreignObject>'
+      svg.append(label)
+      target = kind === 'edge-label' ? label.querySelector('foreignObject')! : label.querySelector('span')!
+    } else {
+      target = document.createElementNS(ns, kind === 'nested-svg' ? 'svg' : 'rect')
+      if (kind === 'ambiguous') target.setAttribute('data-mw-ambiguous', '')
+      svg.append(target)
+    }
+    expect(target).toBeTruthy()
+    pointer(find('node:A'), 'pointerover'); pointer(host.querySelector('.mw-ports button')!, 'pointerdown'); drop(target)
+    expect(editor.code).toBe(CODE); expect(editor.canUndo).toBe(false)
+    expect(editor.result.flowchart!.nodes).toHaveLength(3)
+    expect(editor.result.flowchart!.edges).toHaveLength(1)
+  })
+  it.each(['svg', '.mw-svg-host', 'host'])('拉线到 %s 空白处直接新建节点并连线，一次撤销回到原始字节', selector => {
+    pointer(find('node:A'), 'pointerover'); pointer(host.querySelector('.mw-ports button')!, 'pointerdown')
+    const target = selector === 'host' ? host : host.querySelector(selector)!
+    drop(target)
+    expect(host.querySelector('.mw-new-node-menu')).toBeNull()
     expect(editor.result.flowchart!.nodes).toHaveLength(4)
     expect(editor.result.flowchart!.edges).toHaveLength(2)
+    const created = editor.result.flowchart!.nodes.find(node => !['A', 'B', 'C'].includes(node.id))!
+    expect(created.label).toBe(t('drag.newNode'))
+    expect(editor.result.flowchart!.edges.some(edge => edge.source === 'A' && edge.target === created.id)).toBe(true)
+    pointer(target, 'click', 90)
+    expect(editor.selection).toEqual([created.entityId])
     const after = editor.code
     editor.undo(); expect(editor.code).toBe(CODE); expect(editor.canUndo).toBe(false)
     editor.redo(); expect(editor.code).toBe(after)
@@ -139,8 +173,7 @@ describe.each(['zh-CN', 'en'] as const)('%s 画布手势', locale => {
           '<foreignObject><div xmlns="http://www.w3.org/1999/xhtml"><span class="nodeLabel">$1</span></div></foreignObject>') }
       })
     }
-    pointer(find('node:A'), 'pointerover'); pointer(host.querySelector('.mw-ports button')!, 'pointerdown'); drop(null)
-    pointer(handle('新建节点'), 'click')
+    pointer(find('node:A'), 'pointerover'); pointer(host.querySelector('.mw-ports button')!, 'pointerdown'); drop(host.querySelector('svg'))
     const created = editor.result.flowchart!.nodes.find(node => !['A', 'B', 'C'].includes(node.id))!
     expect(editor.selection).toEqual([created.entityId])
     const beforeRename = editor.code

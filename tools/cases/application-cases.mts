@@ -44,7 +44,7 @@ export function createApplicationCases(root: string): [string, string, () => voi
     ['54', '真实 App：关闭三种决定、保存失败时保持打开；按钮默认值另有原生测试', covered(/close .*cleans drafts/)],
     ['55', '原生打开事件：干净直接打开、脏文件只出现一次带文件名的打开提示；Explorer 手势需人工', covered(/native drop\/open|55:/)],
     ['56', '真实 App + CodeMirror：黄色持续，切换选中与重叠共存，保存清除', covered(/changed lines persist/)],
-    ['E1', '真实 Louvre SVG：自动 fit 最小 60%，溢出可滚动，手动缩放不受限', covered(/E1:/)],
+    ['E1', '真实 Louvre SVG：自动 fit 最小 60%，溢出可滚动，手动缩放不受限', covered(/E1[:：]/)],
     ['E2', '非流程图全部预览：含时序图、甘特图、饼图及类成员，隐藏画布操作且禁止新增', covered(/E2:/)],
     ['6d', '外部修改聚焦/定时检测、三项保存兜底、草稿清理及平移后的首次点击', covered(/focus reloads|timer checks|first edge press/)],
     ['6f-selection', 'Esc、SVG 和画布留白取消选中，平移松手不误取消', covered(/clears selection and the style bar|pan release on/)],
